@@ -1,0 +1,87 @@
+# bloodborne-recomp
+
+A static recompiler for Bloodborne (PS4, CUSA03173 1.09) and bbcpu, the CPU layer it stands on.
+It reads the player's own `eboot.bin` and writes the game's functions as C, compiled into a native
+library the game loads (`BB_RECOMP_LIB`, in bloodborne-runtime). Plan, milestones and results:
+`docs/RECOMPILATION.md` and the wiki's Recompilation-status page.
+
+## Layout
+
+- `src/cpu/`: bbcpu. Decoder (Zydis), interpreter (`interp*.c`), arm64 translator
+  (`jit_arm64.c`), record/replay tracer (`record.c`), natives (`native.c`), the recompiled-code
+  runtime (`recomp.c`: loading, `rc_call`/`rc_tail`/`rc_bail`, frames with their own return
+  addresses, the import fast path). Hosts link `out/libbbcpu.a` and provide `runtime_low_map`.
+- `src/recomp/rc.h`: what generated code includes (API version `BB_RECOMP_API_VERSION`; bump it
+  when RcApi or RcFunction change).
+- `tools/recomp/`: `scan.c` (function table: unwind tables + calls, jumps, lea, relocation
+  pointers), `bbrecomp.c` (the generator), `recomp.sh`, `replay.c`/`replay.sh`, `fuzz.sh`,
+  `ps4elf.py`, `pointers.py`, `imports.py`, `profile.py`, `label.py`, `inspect.sh` (Ghidra).
+- `tests/`: fuzzers and CPU tests. `out/` and `deps/` are not tracked.
+
+## Build and check
+
+```sh
+./build.sh                                    # Zydis into deps/, out/libbbcpu.a, scan, bbrecomp
+GAME=~/Downloads/PS4/Bloodborne/CUSA03173     # the user's dump
+python3 tools/recomp/ps4elf.py "$GAME/eboot.bin" out/eboot.elf
+python3 tools/recomp/pointers.py "$GAME/eboot.bin" out/recomp/pointers.txt
+out/recomp/scan out/eboot.elf out/recomp out/recomp/pointers.txt
+python3 tools/recomp/imports.py "$GAME/eboot.bin" out/recomp
+tools/recomp/recomp.sh --file LIST            # LIST: offsets; all: tail -n +2 out/recomp/functions.tsv | cut -f1
+tools/recomp/fuzz.sh                          # must stay at 0 failed, 0 crashed
+tools/recomp/replay.sh RECORD.rec --recomp out/recomp/librecomp.dylib
+```
+
+A change to the generator or the runtime is checked by: the fuzzer; replays of recorded calls
+(records come from the game with `BB_RECORD`, see RECOMPILATION.md); and a game run through
+bloodborne-runtime (`tools/test_run.sh NAME BB_RECOMP_LIB=$PWD/recomp/out/recomp/librecomp.dylib`).
+The full build (241,031 functions) takes ~11 minutes and makes a ~400 MB library; only files whose
+C changed are compiled again.
+
+## Debugging recompiled code
+
+- Crash markers in a game log: `STOP:`, `Host fault`, `Guest fault`, or the run failing to reach
+  the level. `== Stall during rendering` is **not** one (healthy runs print it).
+- A GPU assertion while loading (`Unimplemented PM4 type 0`) also happens without recompiled code:
+  run again before blaming a change.
+- Bisect with `BB_RECOMP_ONLY=@FILE` (keep only these) or `BB_RECOMP_OFF=@FILE`; also
+  `BB_RECOMP_THREADS` / `BB_RECOMP_NOT_THREADS` (by thread name) and `BB_RECOMP_NODIRECT=1`.
+  `BB_RECOMP_TARGETS=1` prints the busiest calls into the translator every 10 s.
+- Lessons so far: import stubs and `setjmp` callers stay with the translator; every runtime call
+  into the translator has its own return address; jump tables are decoded from their `cmp`/`ja`
+  bound. `BB_REPLAY_WATCH=ADDRESS` traces one byte in a replay.
+- Speed: the frame rate is bound by rendering; compare CPU time (`ps -o cputime=` over 30 s in
+  the level) between alternating runs with and without the library.
+
+## Working rules (all three repositories)
+
+- **The project is three repositories**, nested as submodules:
+  [bloodborne-mac](https://github.com/PabloVSouza/bloodborne-mac) (the app) ⊃ `runtime/` =
+  [bloodborne-runtime](https://github.com/PabloVSouza/bloodborne-runtime) ⊃ `recomp/` =
+  [bloodborne-recomp](https://github.com/PabloVSouza/bloodborne-recomp). Commit in the repository
+  that owns the file, push it, then bump the submodule pointer in the parent (runtime → recomp,
+  mac → runtime) and push that too.
+- **Before any push, check `git remote get-url origin`** (a clone once still pointed at a local
+  repository and a force-push landed there). Push to `main`; ask before force-pushing anything
+  that existed before this session.
+- **Commits:** a short subject, a body that says what changed and why (numbers when measured), and
+  the trailer the session asks for (`Co-Authored-By: ...`).
+- **Credits:** this work is built on [bbport](https://github.com/deadinside28/bloodborne_pc) by
+  deadinside28 and on [shadPS4](https://github.com/shadps4-emu/shadPS4); keep them credited where
+  they are (README, docs/CREDITS.md, the wikis). Code taken from another project or fork is
+  credited in the same commit: CREDITS.md, the wiki's credits page, the commit message and a short
+  code comment.
+- **No game code, ever:** no decompiled or generated game code, no game files, no records of game
+  memory in any repository. Docs and wikis talk about the recompiler only (not about decompiled
+  code or private folders).
+- **Testing the game:** run it in the background with `runtime/tools/test_run.sh NAME [VAR=...]`
+  (bloodborne-runtime's `tools/test_run.sh`): it copies the player's save first and never touches
+  the real one. Check `pgrep -x bb-probe` first; one game at a time. Test windows open on the
+  user's screen: say so before long batches of runs (bisections), and stop when asked.
+- **Never capture the user's screen.** Pictures come from the game itself: `tools/grab.sh NAME`
+  (its frame) or `tools/grab.sh --screen NAME` (with the in-game menu). Screenshots in English
+  (`BB_LANGUAGE=1 BB_UI_LANGUAGE=en`).
+- **Shell:** no `rm -rf` on variable paths (literal paths only); no `xargs ... sh -c '...'` (write
+  a script file instead).
+- **Docs:** plain, precise English; numbers measured, not guessed. When a milestone or a measured
+  number changes, update the docs and the wiki status pages (progress bars: 20 blocks, one per 5%).
