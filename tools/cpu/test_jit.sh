@@ -4,7 +4,7 @@
 # it under Rosetta for the expected results, then tests/test_jit.c with BB_JIT=0 and BB_JIT=1.
 set -euo pipefail
 cd -- "$(dirname -- "$0")/../.."
-D=deps/macos-arm64
+D=${BB_DEPS:-deps}
 clang -arch x86_64 -O2 -mavx -msse4.1 -mpopcnt -fno-builtin -fno-stack-protector -Wl,-no_pie -Wl,-image_base,0x30000000000 \
     tests/jit_guest.c -o out/jit_guest
 ROSETTA_ADVERTISE_AVX=1 out/jit_guest > out/jit_guest.expected

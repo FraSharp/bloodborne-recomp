@@ -5,7 +5,7 @@
 # BB_RECOMP_LIB; replay.sh --recomp checks it. Needs out/recomp/functions.tsv (tools/recomp/scan.c).
 set -euo pipefail
 cd -- "$(dirname -- "$0")/../.."
-D=deps/macos-arm64
+D=${BB_DEPS:-deps}
 G=out/recomp/gen
 mkdir -p "$G"
 offsets=("$@")

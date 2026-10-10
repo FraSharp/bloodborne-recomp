@@ -3,7 +3,7 @@
 # recorded calls (docs/RECOMPILATION.md).
 set -euo pipefail
 cd -- "$(dirname -- "$0")/../.."
-D=deps/macos-arm64
+D=${BB_DEPS:-deps}
 mkdir -p out/recomp
 clang -arch arm64 -O1 -g -std=gnu11 -Wall -I$D/include tools/recomp/replay.c src/cpu/cpu.c \
     src/cpu/decode.c src/cpu/interp.c src/cpu/interp_vec.c src/cpu/interp_x87.c src/cpu/jit_arm64.c \

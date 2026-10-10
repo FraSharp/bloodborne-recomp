@@ -2,15 +2,15 @@
 """tools/recomp/imports.py EBOOT_BIN OUTDIR: the game's import stubs by name, OUTDIR/imports.tsv
 (stub offset, import name): a stub is a function of tools/recomp/scan.c that is one jump through a
 pointer slot (OUTDIR/slots.tsv) the loader fills with an import (the jump-slot relocations of
-EBOOT_BIN; names from src/import_names.inc, else the NID). bbrecomp leaves the callers of
+EBOOT_BIN; names from import_names.inc, else the NID). bbrecomp leaves the callers of
 setjmp-like imports to the translator; the names also label the generated code."""
 import pathlib
 import re
 import sys
 
-ROOT = pathlib.Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / 'scripts'))
-import link_modules  # noqa: E402
+HERE = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+import ps4elf  # noqa: E402
 
 R_X86_64_JUMP_SLOT = 7
 R_X86_64_GLOB_DAT = 6
@@ -20,8 +20,8 @@ def main():
     if len(sys.argv) != 3:
         sys.exit(__doc__)
     out = pathlib.Path(sys.argv[2])
-    known = dict(re.findall(r'\{"([^"]+)","([^"]+)"\}', (ROOT / 'src/import_names.inc').read_text()))
-    m = link_modules.module(pathlib.Path(sys.argv[1]))
+    known = dict(re.findall(r'\{"([^"]+)","([^"]+)"\}', (HERE / 'import_names.inc').read_text()))
+    m = ps4elf.module(pathlib.Path(sys.argv[1]))
     slots = {}
     for target, kind, symid, _ in m['relocs']:
         if kind in (R_X86_64_JUMP_SLOT, R_X86_64_GLOB_DAT):

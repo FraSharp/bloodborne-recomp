@@ -1,9 +1,10 @@
 # Recompilation
 
 > [!NOTE]
-> This work happens on the [`recomp`](https://github.com/PabloVSouza/bloodborne-recomp/tree/recomp)
-> branch: the tools named below are there, not in `main` yet. Progress is tracked on the wiki:
-> [Recompilation status](https://github.com/PabloVSouza/bloodborne-recomp/wiki/Recompilation-status).
+> Progress is tracked on the wiki: [Recompilation status](https://github.com/PabloVSouza/bloodborne-recomp/wiki/Recompilation-status).
+> The game side (loading the recompiled library, recording calls) is in
+> [bloodborne-runtime](https://github.com/PabloVSouza/bloodborne-runtime); the Mac app in
+> [bloodborne-mac](https://github.com/PabloVSouza/bloodborne-mac).
 
 Goal: the game's own code running as native arm64 code, compiled ahead of time instead of
 translated while the game runs, and in the end the engine's graphics drawing with Metal directly
@@ -165,16 +166,20 @@ All write to `out/recomp/`.
 | `tools/recomp/fuzz.sh` | The generator's C for every instruction form, fuzzed against the interpreter |
 
 ```sh
-D=deps/macos-arm64
-clang -arch arm64 -O2 -I$D/include tools/recomp/scan.c $D/lib/libZydis.a $D/lib/libZycore.a \
-    -o out/recomp/scan
+./build.sh                          # Zydis into deps/, out/libbbcpu.a, out/recomp/scan and bbrecomp
 GAME=/path/to/CUSA03173  # the game folder (1.09)
+python3 tools/recomp/ps4elf.py "$GAME/eboot.bin" out/eboot.elf
 python3 tools/recomp/pointers.py "$GAME/eboot.bin" out/recomp/pointers.txt
 out/recomp/scan out/eboot.elf out/recomp out/recomp/pointers.txt
 python3 tools/recomp/imports.py "$GAME/eboot.bin" out/recomp
 python3 tools/recomp/label.py out/recomp
 
-# A profile: 5 s of every thread, then the main thread's functions.
+# Generate and compile functions (or every one: tail -n +2 out/recomp/functions.tsv | cut -f1).
+tools/recomp/recomp.sh --file LIST          # out/recomp/librecomp.dylib; the game: BB_RECOMP_LIB
+tools/recomp/fuzz.sh                        # every instruction form, generated C against the interpreter
+
+# In the game (bloodborne-mac's tools/mac_bench.sh). A profile: 5 s of every thread, then the
+# main thread's functions.
 SAMPLE=1 tools/mac_bench.sh prof BB_JIT_MAP=$PWD/out/jit.map
 python3 tools/recomp/profile.py out/bench_prof_*.sample.txt out/jit.map out/bench_prof_*.log Thread_<id>
 

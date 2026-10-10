@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """tools/recomp/profile.py SAMPLE.txt JIT_MAP LOG [THREAD_SUBSTRING] [--out OUTDIR] [--top N]: CPU time of
 the game's own functions (docs/RECOMPILATION.md). Translated-code self samples from a macOS `sample`
-file (tools/sample_guest.py) are given to the functions of OUTDIR/functions.tsv
+file (tools/recomp/sample_guest.py) are given to the functions of OUTDIR/functions.tsv
 (tools/recomp/scan.c) and their modules (tools/recomp/label.py); LOG is the run's log, for the image
 base ("Image: game image at"). A run: SAMPLE=1 tools/mac_bench.sh NAME BB_JIT_MAP=FILE.
 
@@ -13,7 +13,7 @@ import os
 import re
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from sample_guest import guest_samples  # noqa: E402
 
 

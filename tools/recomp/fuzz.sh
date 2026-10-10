@@ -4,7 +4,7 @@
 # 30 per mnemonic, tools/cpu/encodings.c).
 set -euo pipefail
 cd -- "$(dirname -- "$0")/../.."
-D=deps/macos-arm64
+D=${BB_DEPS:-deps}
 CPU="src/cpu/cpu.c src/cpu/decode.c src/cpu/interp.c src/cpu/interp_vec.c src/cpu/interp_x87.c src/cpu/jit_arm64.c
      src/cpu/record.c src/cpu/native.c src/cpu/recomp.c src/cpu/hostcall.S"
 mkdir -p out/recomp/gen
