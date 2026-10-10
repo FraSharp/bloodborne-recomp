@@ -1,7 +1,7 @@
 # Recompilation
 
 > [!NOTE]
-> Progress is tracked on the wiki: [Recompilation status](https://github.com/PabloVSouza/bloodborne-recomp/wiki/Recompilation-status).
+> [Documentation](README.md). Progress is tracked on the wiki: [Recompilation status](https://github.com/PabloVSouza/bloodborne-recomp/wiki/Recompilation-status).
 > The game side (loading the recompiled library, recording calls) is in
 > [bloodborne-runtime](https://github.com/PabloVSouza/bloodborne-runtime); the Mac app in
 > [bloodborne-mac](https://github.com/PabloVSouza/bloodborne-mac).

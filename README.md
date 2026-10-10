@@ -20,6 +20,7 @@ functions against the original. Nothing here depends on an operating system: pro
 Every one of the game's 241,821 functions is generated (98.8% of the instructions in plain C) and
 the game runs on them; the work now is speed. See [docs/RECOMPILATION.md](docs/RECOMPILATION.md)
 and the [status page](https://github.com/PabloVSouza/bloodborne-recomp/wiki/Recompilation-status).
+All docs: [docs/README.md](docs/README.md).
 
 ## Build and use
 
@@ -41,6 +42,8 @@ The game loads the library with `BB_RECOMP_LIB=out/recomp/librecomp.dylib` (bloo
 interpreter; `tools/recomp/replay.sh` checks recorded calls ([docs/RECOMPILATION.md](docs/RECOMPILATION.md)).
 
 ## Credits
+
+Full list: [docs/CREDITS.md](docs/CREDITS.md).
 
 Started inside [bloodborne_mac](https://github.com/PabloVSouza/bloodborne_mac), itself built on
 [bbport](https://github.com/deadinside28/bloodborne_pc) by deadinside28 and on
