@@ -178,18 +178,18 @@ python3 tools/recomp/label.py out/recomp
 tools/recomp/recomp.sh --file LIST          # out/recomp/librecomp.dylib; the game: BB_RECOMP_LIB
 tools/recomp/fuzz.sh                        # every instruction form, generated C against the interpreter
 
-# In the game (bloodborne-mac's tools/mac_bench.sh). A profile: 5 s of every thread, then the
-# main thread's functions.
-SAMPLE=1 tools/mac_bench.sh prof BB_JIT_MAP=$PWD/out/jit.map
-python3 tools/recomp/profile.py out/bench_prof_*.sample.txt out/jit.map out/bench_prof_*.log Thread_<id>
+# In the game: from a bloodborne-runtime checkout (this repository is its recomp/), with its
+# tools/mac_bench.sh. A profile: 5 s of every thread, then the main thread's functions.
+SAMPLE=1 tools/mac_bench.sh prof BB_JIT_MAP=$PWD/out/jit.map               # in the runtime
+python3 recomp/tools/recomp/profile.py out/bench_prof_*.sample.txt out/jit.map out/bench_prof_*.log Thread_<id>
 
 brew install ghidra
 tools/recomp/inspect.sh 0x21b8710
 
-# Record calls (OFFSET:SIZE from functions.tsv) and replay them.
+# Record calls (OFFSET:SIZE from functions.tsv) in the game, from the runtime, and replay them here.
 tools/mac_bench.sh rec BB_RECORD=0x22928a0:247,0x227e230:579 BB_RECORD_EVERY=7 \
-    BB_RECORD_DIR=$PWD/out/recomp/records
-tools/recomp/replay.sh out/recomp/records/0x22928a0.rec
+    BB_RECORD_DIR=$PWD/recomp/out/recomp/records                             # in the runtime
+tools/recomp/replay.sh out/recomp/records/0x22928a0.rec                      # here
 ```
 
 ## Record and replay

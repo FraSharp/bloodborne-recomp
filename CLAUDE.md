@@ -34,7 +34,8 @@ tools/recomp/replay.sh RECORD.rec --recomp out/recomp/librecomp.dylib
 
 A change to the generator or the runtime is checked by: the fuzzer; replays of recorded calls
 (records come from the game with `BB_RECORD`, see RECOMPILATION.md); and a game run through
-bloodborne-runtime (`tools/test_run.sh NAME BB_RECOMP_LIB=$PWD/recomp/out/recomp/librecomp.dylib`).
+bloodborne-runtime (the runtime's `tools/test_run.sh NAME BB_RECOMP_LIB=$PWD/recomp/out/recomp/librecomp.dylib`,
+run from the runtime checkout).
 The full build (241,031 functions) takes ~11 minutes and makes a ~400 MB library; only files whose
 C changed are compiled again.
 
@@ -53,6 +54,24 @@ C changed are compiled again.
 - Speed: the frame rate is bound by rendering; compare CPU time (`ps -o cputime=` over 30 s in
   the level) between alternating runs with and without the library.
 
+## Where it stands (2026-10-11) and what is next
+
+- R2 done: all 241,031 functions generated (98.8% of instructions in C), 240,995 run in the game.
+  Same frame rate as the translator but **20–30% more CPU time** (5.2–5.5 cores against 4.3 in the
+  Hunter's Dream, `ps -o cputime=` over 30 s). R3 is making it cheaper. Candidates, measure each:
+  the copy of the 16 registers to and from `BbCpu` around every call; vector registers kept in
+  `BbCpu` instead of locals; acquire/release on every stack access; code layout of the 400 MB
+  library (hot functions together, cold code at -Os); the remaining calls into the translator
+  (wide-character libc functions; check the PS4's `wchar_t` size first). A `sample` of a run
+  with the full library comes out nearly empty (its symbols are too large): profile with the
+  49k-function library (`out/recomp/ran.txt`) instead.
+- Data from earlier sessions, in the old checkout `~/projects/pablovsouza/bloodborne_pc/out/recomp/`
+  (game-derived, never commit): `records40/` (40 recorded calls of each of the 933 busiest
+  functions: 911 match, the rest also fail with the original), `hot.txt` (those 933), `ran.txt`
+  (the 49,095 a 3-minute route ran), `jitmap.txt`. Copy them into `out/recomp/` here.
+- Next after R3: more routes (other areas, bosses), names for known library code (zlib, Lua) and
+  the game's imports in the generated C (R4), recompiling at install time from the launcher.
+
 ## Working rules (all three repositories)
 
 - **The project is three repositories**, nested as submodules:
@@ -60,7 +79,9 @@ C changed are compiled again.
   [bloodborne-runtime](https://github.com/PabloVSouza/bloodborne-runtime) ⊃ `recomp/` =
   [bloodborne-recomp](https://github.com/PabloVSouza/bloodborne-recomp). Commit in the repository
   that owns the file, push it, then bump the submodule pointer in the parent (runtime → recomp,
-  mac → runtime) and push that too.
+  mac → runtime) and push that too. Submodules are checked out at a commit (detached HEAD):
+  before editing inside `runtime/` or `runtime/recomp/`, run `git checkout main` (and
+  `git pull`) there. Separate clones of each repository side by side work the same way.
 - **Before any push, check `git remote get-url origin`** (a clone once still pointed at a local
   repository and a force-push landed there). Push to `main`; ask before force-pushing anything
   that existed before this session.

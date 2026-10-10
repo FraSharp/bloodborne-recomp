@@ -1,5 +1,7 @@
 # Native arm64 (no Rosetta)
 
+[← Documentation](README.md)
+
 Goal: the macOS build runs natively on Apple Silicon. The game's code is x86-64 machine code with
 no source, so it is translated in-process by `bbcpu` (src/cpu/); everything else (runtime, GPU
 library, MoltenVK, SDL, FFmpeg) is built for arm64.
@@ -41,7 +43,7 @@ only through imports the runtime already implements), no self-modifying code, on
 
 ## Status (2026-10-09)
 
-- Stages 1–3 done: the native arm64 build is the default on Apple Silicon (`build.sh`, `run.sh`;
+- Stages 1–3 done: the native arm64 build is the default on Apple Silicon (bloodborne-runtime's `build.sh`, `run.sh`;
   `BB_ARCH=x86_64` builds the Rosetta 2 one). The game boots, loads saves and plays.
 - The JIT (`src/cpu/jit_arm64.c`) translates the integer, SSE/AVX and atomic
   instructions the game uses; anything else runs in the interpreter, in-block where possible.
@@ -65,7 +67,7 @@ only through imports the runtime already implements), no self-modifying code, on
 ## Debugging switches
 
 `BB_JIT_DENY=tokens` (interpret chosen instruction kinds), `BB_JIT_MAP=file` (guest block → host
-code map, for `tools/sample_guest.py` with macOS `sample`), `BB_JIT_DUMP=file` (instructions seen).
+code map, for `tools/recomp/sample_guest.py` with macOS `sample`), `BB_JIT_DUMP=file` (instructions seen).
 
 ## Pitfalls found
 
