@@ -51,6 +51,9 @@ C changed are compiled again.
 - Lessons so far: import stubs and `setjmp` callers stay with the translator; every runtime call
   into the translator has its own return address; jump tables are decoded from their `cmp`/`ja`
   bound. `BB_REPLAY_WATCH=ADDRESS` traces one byte in a replay.
+- REA (an MCP server with Ghidra, on the user's machine) answers "who calls this", "decompile
+  this" and "what references this address" about the game's code; its output is game code and
+  never goes into a repository.
 - Speed: the frame rate is bound by rendering; compare CPU time (`ps -o cputime=` over 30 s in
   the level) between alternating runs with and without the library.
 
