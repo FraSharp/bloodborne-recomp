@@ -74,6 +74,9 @@ C changed are compiled again.
   `records40/` (40 recorded calls of each of the 933 busiest functions: 911 match, the rest also
   fail with the original), `hot.txt` (those 933), `ran.txt` (the 49,095 a 3-minute route ran),
   `all.txt`, `jitmap.txt`. Regenerate `functions.tsv` and the rest with the commands above.
+- R5 (the native renderer) is planned and worked on in bloodborne-runtime
+  (`docs/NATIVE_RENDERER.md`). Its part here: calls of hooked functions (bbcpu guards, natives)
+  from recompiled code must go through the runtime, not directly to the recompiled callee.
 - Next after R3: more routes (other areas, bosses), names for known library code (zlib, Lua) and
   the game's imports in the generated C (R4), recompiling at install time from the launcher.
 

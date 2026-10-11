@@ -7,8 +7,8 @@
 > [bloodborne-mac](https://github.com/bloodborne-native/bloodborne-mac).
 
 Goal: the game's own code running as native arm64 code, compiled ahead of time instead of
-translated while the game runs, and in the end the engine's graphics drawing with Metal directly
-instead of building PS4 command buffers for shadPS4 and MoltenVK to translate.
+translated while the game runs, and in the end the engine's graphics drawn with each platform's
+own GPU API (Vulkan, Metal) instead of PS4 command buffers translated while the game runs.
 
 The way there is a **static recompiler**: a tool that runs on the player's Mac, reads *their own*
 `eboot.bin` and writes the game's functions out as C, which clang compiles into a native library
@@ -47,7 +47,7 @@ The recompiled code is produced on the player's machine from their copy, and sta
 | R2 | Coverage: every function generated; the game runs recompiled, the translator as fallback | Done |
 | R3 | Speed: integer, flags and vector instructions in C; memory ordering relaxed where safe | In progress |
 | R4 | Annotations: names, signatures and structs make the generated C readable | |
-| R5 | The engine's graphics on Metal, at the libGnm boundary | |
+| R5 | The engine's graphics on each platform's own GPU API: [native renderer](https://github.com/bloodborne-native/bloodborne-runtime/blob/main/docs/NATIVE_RENDERER.md) (bloodborne-runtime) | Started: scoping done |
 
 ## Progress
 
