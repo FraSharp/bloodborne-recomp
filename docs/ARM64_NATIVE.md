@@ -68,6 +68,9 @@ only through imports the runtime already implements), no self-modifying code, on
 
 `BB_JIT_DENY=tokens` (interpret chosen instruction kinds), `BB_JIT_MAP=file` (guest block → host
 code map, for `tools/recomp/sample_guest.py` with macOS `sample`), `BB_JIT_DUMP=file` (instructions seen).
+Hosts can watch guest functions: `bbcpu_set_probe` (a host function at a guest address, with the
+registers) and `bbcpu_set_guard` (one on entry and one on return: the return address is kept on a
+per-thread stack). bloodborne-runtime's `BB_CB_PROBE` and command buffer guards use them.
 
 ## Pitfalls found
 
@@ -79,3 +82,6 @@ code map, for `tools/recomp/sample_guest.py` with macOS `sample`), `BB_JIT_DUMP=
   failed exchange it reported the value of a separate load, which another thread could have
   changed back, so a failed exchange looked successful and two threads took the same lock
   (found with the recompiler, docs/RECOMPILATION.md). Uneven thread speeds made it likely.
+- "Unimplemented PM4 type 0" while loading (most loads in Brazilian Portuguese) was not the CPU
+  layer: the game's main thread and its render thread wrote one GPU command buffer at once, which
+  the PS4's timing hid (bloodborne-runtime: command buffer guards).
