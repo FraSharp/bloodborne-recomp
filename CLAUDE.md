@@ -75,9 +75,9 @@ C changed are compiled again.
 ## Working rules (all three repositories)
 
 - **The project is three repositories**, nested as submodules:
-  [bloodborne-mac](https://github.com/PabloVSouza/bloodborne-mac) (the app) ⊃ `runtime/` =
-  [bloodborne-runtime](https://github.com/PabloVSouza/bloodborne-runtime) ⊃ `recomp/` =
-  [bloodborne-recomp](https://github.com/PabloVSouza/bloodborne-recomp). Commit in the repository
+  [bloodborne-mac](https://github.com/bloodborne-native/bloodborne-mac) (the app) ⊃ `runtime/` =
+  [bloodborne-runtime](https://github.com/bloodborne-native/bloodborne-runtime) ⊃ `recomp/` =
+  [bloodborne-recomp](https://github.com/bloodborne-native/bloodborne-recomp). Commit in the repository
   that owns the file, push it, then bump the submodule pointer in the parent (runtime → recomp,
   mac → runtime) and push that too. Submodules are checked out at a commit (detached HEAD):
   before editing inside `runtime/` or `runtime/recomp/`, run `git checkout main` (and

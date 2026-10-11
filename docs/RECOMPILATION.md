@@ -1,10 +1,10 @@
 # Recompilation
 
 > [!NOTE]
-> [Documentation](README.md). Progress is tracked on the wiki: [Recompilation status](https://github.com/PabloVSouza/bloodborne-recomp/wiki/Recompilation-status).
+> [Documentation](README.md). Progress is tracked on the wiki: [Recompilation status](https://github.com/bloodborne-native/bloodborne-recomp/wiki/Recompilation-status).
 > The game side (loading the recompiled library, recording calls) is in
-> [bloodborne-runtime](https://github.com/PabloVSouza/bloodborne-runtime); the Mac app in
-> [bloodborne-mac](https://github.com/PabloVSouza/bloodborne-mac).
+> [bloodborne-runtime](https://github.com/bloodborne-native/bloodborne-runtime); the Mac app in
+> [bloodborne-mac](https://github.com/bloodborne-native/bloodborne-mac).
 
 Goal: the game's own code running as native arm64 code, compiled ahead of time instead of
 translated while the game runs, and in the end the engine's graphics drawing with Metal directly

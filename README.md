@@ -12,14 +12,14 @@ functions against the original. Nothing here depends on an operating system: pro
 | Repository | |
 |---|---|
 | **bloodborne-recomp** (this one) | The recompiler and bbcpu: portable |
-| [bloodborne-runtime](https://github.com/PabloVSouza/bloodborne-runtime) | Loads the game: the PS4 libraries, the renderer; loads the recompiled library |
-| [bloodborne-mac](https://github.com/PabloVSouza/bloodborne-mac) | The macOS app, built on both |
+| [bloodborne-runtime](https://github.com/bloodborne-native/bloodborne-runtime) | Loads the game: the PS4 libraries, the renderer; loads the recompiled library |
+| [bloodborne-mac](https://github.com/bloodborne-native/bloodborne-mac) | The macOS app, built on both |
 
 ## Status
 
 Every one of the game's 241,821 functions is generated (98.8% of the instructions in plain C) and
 the game runs on them; the work now is speed. See [docs/RECOMPILATION.md](docs/RECOMPILATION.md)
-and the [status page](https://github.com/PabloVSouza/bloodborne-recomp/wiki/Recompilation-status).
+and the [status page](https://github.com/bloodborne-native/bloodborne-recomp/wiki/Recompilation-status).
 All docs: [docs/README.md](docs/README.md).
 
 ## Build and use
