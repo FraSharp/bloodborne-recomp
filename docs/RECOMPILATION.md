@@ -47,7 +47,7 @@ The recompiled code is produced on the player's machine from their copy, and sta
 | R2 | Coverage: every function generated; the game runs recompiled, the translator as fallback | Done |
 | R3 | Speed: integer, flags and vector instructions in C; memory ordering relaxed where safe | In progress |
 | R4 | Annotations: names, signatures and structs make the generated C readable | |
-| R5 | The engine's graphics on each platform's own GPU API: [native renderer](https://github.com/bloodborne-native/bloodborne-runtime/blob/main/docs/NATIVE_RENDERER.md) (bloodborne-runtime) | Started: scoping done |
+| R5 | The engine's graphics on each platform's own GPU API: [native renderer](https://github.com/bloodborne-native/bloodborne-runtime/blob/main/docs/NATIVE_RENDERER.md) (bloodborne-runtime) | N1 in progress: deferred clears done |
 
 ## Progress
 
