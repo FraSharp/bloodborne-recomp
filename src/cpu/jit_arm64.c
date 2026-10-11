@@ -2263,10 +2263,11 @@ static void *translate(BbBlock *block) {
     uint32_t *start = code_next;
     uint64_t rip = block->start;
     int ended = 0, translated = 0;
-    /* BB_RECORD, native and recompiled functions (record.c, native.c, recomp.c): their first
-     * instruction goes through bbcpu_step. */
+    /* BB_RECORD, native and recompiled functions and probes (record.c, native.c, recomp.c): their
+     * first instruction goes through bbcpu_step. */
     const int recorded = (bbcpu_record_armed && bbcpu_record_target(block->start)) ||
                          (bbcpu_native_count && bbcpu_native_at(block->start)) ||
+                         (bbcpu_probe_count && bbcpu_probe_at(block->start)) ||
                          (bbcpu_recomp_count && bbcpu_recomp_at(block->start));
     for (uint32_t i = 0; i < block->count && !ended && !recorded; ++i) {
         const BbInsn *in = &block->insn[i];
@@ -2346,6 +2347,13 @@ int bbcpu_jit_run(BbCpu *cpu, uint64_t stop) {
     x86_to_jit(cpu);
     cpu->jit_link = 0;
     while (cpu->rip != stop) {
+        if (__builtin_expect(cpu->rip == BB_GUARD_RETURN, 0)) {
+            cpu->jit_link = 0;
+            jit_to_x86(cpu);
+            bbcpu_guard_return(cpu);
+            x86_to_jit(cpu);
+            continue;
+        }
         if (!bbcpu_is_guest_code(cpu->rip)) {
             cpu->jit_link = 0;
             jit_to_x86(cpu);

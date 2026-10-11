@@ -895,6 +895,7 @@ static uint64_t step(BbCpu *cpu, const BbInsn *in) {
 /* x86 locked instructions (and xchg with memory) are full barriers; arm64's acquire/release
  * atomics are not (a failed CAS only acquires), so the barriers are explicit. */
 uint64_t bbcpu_step(BbCpu *cpu, const BbInsn *in) {
+    if (__builtin_expect(bbcpu_probe_count, 0)) bbcpu_run_probe(cpu);
     /* BB_RECORD: a call of a recorded function runs in the recorder (record.c). */
     if (__builtin_expect(bbcpu_record_armed, 0) && bbcpu_record_wants(cpu->rip))
         return bbcpu_record_call(cpu);
@@ -949,6 +950,10 @@ void bbcpu_run(BbCpu *cpu, uint64_t stop) {
     }
     if (bbcpu_jit_run(cpu, stop)) return;
     while (cpu->rip != stop) {
+        if (__builtin_expect(cpu->rip == BB_GUARD_RETURN, 0)) {
+            bbcpu_guard_return(cpu);
+            continue;
+        }
         if (!bbcpu_is_guest_code(cpu->rip)) {
             if (bbcpu_return_hook) bbcpu_return_hook(cpu);
             /* Reached a host function through a return or a computed branch (a host function

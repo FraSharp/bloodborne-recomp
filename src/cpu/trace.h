@@ -51,6 +51,16 @@ const void *bbcpu_native_at(uint64_t address);
  * no return address pushed; interp.c). */
 void bbcpu_call_native(BbCpu *cpu, const void *fn);
 
+/* Probes (native.c): run the probe at `address`, if any (bbcpu_step; the JIT leaves the first
+ * instruction of a probed address to it). */
+extern int bbcpu_probe_count;
+int bbcpu_probe_at(uint64_t address);
+void bbcpu_run_probe(BbCpu *cpu);
+/* A guarded call's return lands on BB_GUARD_RETURN (not guest code): the dispatchers call
+ * bbcpu_guard_return, which runs the guard's leave and continues at the real return address. */
+#define BB_GUARD_RETURN UINT64_C(0xbb6a7d0000000000)
+void bbcpu_guard_return(BbCpu *cpu);
+
 /* Recompiled game functions (recomp.c, src/recomp/rc.h): the one at `address`, or NULL. */
 typedef void (*RcFn)(BbCpu *cpu);
 extern int bbcpu_recomp_count;

@@ -29,6 +29,18 @@ void bbcpu_call_full(uintptr_t fn, const uint64_t gpr[6], const uint8_t xmm[8][1
 /* Native versions of game functions (docs/RECOMPILATION.md): a call of guest `address` runs host
  * function `fn` (SysV arguments bridged, like a host import). Set before guest code runs. */
 void bbcpu_set_native(uint64_t address, const void *fn);
+/* Probes (diagnostics): host function `fn` runs when guest code reaches `address`, with the
+ * guest's registers (rax rcx rdx rbx rsp rbp rsi rdi r8-r15) and `tag`; the guest code then runs
+ * as usual. Set before guest code runs. */
+typedef void (*BbProbe)(const uint64_t regs[16], uint64_t address, uint32_t tag);
+void bbcpu_set_probe(uint64_t address, BbProbe fn, uint32_t tag);
+/* Guards: `enter` runs when guest code reaches `address` (a function's first instruction) and
+ * returns a cookie; with a non-zero cookie, `leave(cookie)` runs when that call returns (its
+ * return address is kept on a per-thread stack and the guest's slot holds BB_GUARD_RETURN until
+ * then). Recompiled functions (BB_RECOMP_LIB) call each other directly: not guarded there. */
+typedef uint64_t (*BbGuardEnter)(const uint64_t regs[16], uint32_t tag);
+typedef void (*BbGuardLeave)(uint64_t cookie);
+void bbcpu_set_guard(uint64_t address, BbGuardEnter enter, BbGuardLeave leave, uint32_t tag);
 /* BB_RECOMP_LIB: recompiled game functions replace the translated ones (recomp.c). */
 void bbcpu_recomp_load(uint64_t image_base);
 /* Like bbcpu_call on a new guest stack [stack, stack + size) (thread entry, game entry). */
