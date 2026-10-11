@@ -65,10 +65,10 @@ C changed are compiled again.
   (wide-character libc functions; check the PS4's `wchar_t` size first). A `sample` of a run
   with the full library comes out nearly empty (its symbols are too large): profile with the
   49k-function library (`out/recomp/ran.txt`) instead.
-- Data from earlier sessions, in the old checkout `~/projects/pablovsouza/bloodborne_pc/out/recomp/`
-  (game-derived, never commit): `records40/` (40 recorded calls of each of the 933 busiest
-  functions: 911 match, the rest also fail with the original), `hot.txt` (those 933), `ran.txt`
-  (the 49,095 a 3-minute route ran), `jitmap.txt`. Copy them into `out/recomp/` here.
+- Data from earlier sessions, in `out/recomp/` of the user's clone (game-derived, never commit):
+  `records40/` (40 recorded calls of each of the 933 busiest functions: 911 match, the rest also
+  fail with the original), `hot.txt` (those 933), `ran.txt` (the 49,095 a 3-minute route ran),
+  `all.txt`, `jitmap.txt`. Regenerate `functions.tsv` and the rest with the commands above.
 - Next after R3: more routes (other areas, bosses), names for known library code (zlib, Lua) and
   the game's imports in the generated C (R4), recompiling at install time from the launcher.
 
