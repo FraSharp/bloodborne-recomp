@@ -43,8 +43,10 @@ C changed are compiled again.
 
 - Crash markers in a game log: `STOP:`, `Host fault`, `Guest fault`, or the run failing to reach
   the level. `== Stall during rendering` is **not** one (healthy runs print it).
-- A GPU assertion while loading (`Unimplemented PM4 type 0`) also happens without recompiled code:
-  run again before blaming a change.
+- A GPU assertion while loading (`Unimplemented PM4 type 0`) was two game threads writing one
+  command buffer (fixed in bloodborne-runtime: `runtime_cmdbuf.c`, bbcpu guards); recompiled
+  functions call each other directly and are not guarded, so if it comes back with the library
+  only, look there first. `BB_CB_PROBE=1` names the threads.
 - Bisect with `BB_RECOMP_ONLY=@FILE` (keep only these) or `BB_RECOMP_OFF=@FILE`; also
   `BB_RECOMP_THREADS` / `BB_RECOMP_NOT_THREADS` (by thread name) and `BB_RECOMP_NODIRECT=1`.
   `BB_RECOMP_TARGETS=1` prints the busiest calls into the translator every 10 s.
