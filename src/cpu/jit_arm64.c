@@ -41,9 +41,21 @@ static uint32_t *enter_stub, *exit_stub, *fallback_stub, *native_stub, *recomp_s
 static pthread_mutex_t jit_lock = PTHREAD_MUTEX_INITIALIZER;
 static uint64_t translated_blocks, fallback_insns;
 /* Translated blocks in code order (the buffer only grows), for fault reports. */
-typedef struct { const uint32_t *start, *end; const BbBlock *block; } CodeRange;
-static CodeRange *ranges;
-static size_t range_count, range_capacity;
+typedef struct { const uint32_t *start, *end; uint64_t rip; } InstructionRange;
+typedef struct {
+    const uint32_t *start, *end;
+    const BbBlock *block;
+    InstructionRange *instructions;
+    size_t instruction_count;
+} CodeRange;
+enum { RANGE_CHUNK_SIZE = 256 };
+typedef struct CodeRangeChunk {
+    struct CodeRangeChunk *next;
+    size_t count;
+    CodeRange entries[RANGE_CHUNK_SIZE];
+} CodeRangeChunk;
+/* Published chunks and entries are retained: a fault handler cannot lock or follow realloc. */
+static CodeRangeChunk *range_chunks;
 
 typedef void (*EnterFn)(BbCpu *cpu, const void *code);
 
@@ -242,6 +254,7 @@ static int jit_init(void) {
 typedef struct {
     uint32_t *branch, *resume;
     uint8_t store, lg, rt, addr;
+    uint64_t rip;
 } SlowAccess;
 enum { MAX_SLOW = 256 };
 
@@ -251,6 +264,8 @@ typedef struct {
     uint64_t rip; /* of the instruction being translated */
     SlowAccess slow[MAX_SLOW];
     int slow_count;
+    InstructionRange *fault_map;
+    size_t fault_count;
 } Tx;
 
 /* Indirect branch cache, per thread (BbCpu): guest rip -> translated code. */
@@ -385,6 +400,7 @@ static void ordered_access(Tx *t, int store_, int size, int rt, int addr) {
             s->lg = (uint8_t)lg;
             s->rt = (uint8_t)rt;
             s->addr = (uint8_t)addr;
+            s->rip = t->rip;
             return;
         }
         /* The block's table is full: inline, as before. */
@@ -403,6 +419,7 @@ static void emit_slow_accesses(Tx *t) {
     A64 *a = &t->a;
     for (int i = 0; i < t->slow_count; ++i) {
         const SlowAccess *s = &t->slow[i];
+        const uint32_t *start = a64_here(a);
         a64_patch_bcond(s->branch, a64_here(a));
         if (s->store) {
             a64_dmb_ish(a);
@@ -412,6 +429,8 @@ static void emit_slow_accesses(Tx *t) {
             a64_emit(a, 0xd50339bfu); /* dmb ishld */
         }
         a64_b(a, (int32_t)(s->resume - a64_here(a)));
+        if (t->fault_map)
+            t->fault_map[t->fault_count++] = (InstructionRange){start, a64_here(a), s->rip};
     }
     t->slow_count = 0;
 }
@@ -438,6 +457,67 @@ static int stack_operand(const BbOp *op) {
     return enabled && op->type == OP_MEM && !op->segment && op->base == RSP;
 }
 
+/* BB_JIT_WATCH=address:displacement[:displacement...]: selected scalar MOV accesses.
+ * The loaded/stored value is recorded directly; no second guest read or host call. */
+static void watch_move(Tx *t, const BbInsn *in, const BbOp *op, int rt, int addr, int store_) {
+    static int initialized;
+    static uint64_t target, load_site;
+    static int64_t displacements[8];
+    static size_t count;
+    if (!initialized) {
+        const char *env = getenv("BB_JIT_WATCH");
+        if (env) {
+            char *end;
+            target = strtoull(env, &end, 0);
+            while (*end == ':' && count < 8) {
+                const char *start = end + 1;
+                const int64_t displacement = strtoll(start, &end, 0);
+                if (end == start) break;
+                displacements[count++] = displacement;
+            }
+        }
+        const char *site = getenv("BB_JIT_WATCH_LOAD");
+        if (site) load_site = strtoull(site, NULL, 0);
+        initialized = 1; /* translation holds jit_lock */
+    }
+    if (!target || in->mnemonic != M(MOV) || op->size != 8) return;
+    size_t i;
+    for (i = 0; i < count && op->disp != displacements[i]; ++i) {}
+    if (i == count) return;
+    A64 *a = &t->a;
+    /* Scalar MOV has no live scratch values in T3-T5/TB at this point. Preserve NZCV. */
+    a64_mov(a, 1, T3, addr);
+    a64_mov_imm(a, T4, target);
+    a64_logic(a, 2, 0, 1, T4, T3, T4, 0, 0); /* eor */
+    uint32_t *skip = NULL;
+    if (store_ || t->rip != load_site) { skip = a64_here(a); a64_cbnz(a, 1, T4, 0); }
+    a64_ldr_uoff(a, 3, TB, CPU, OFF(watch));
+    uint32_t *no_watch = a64_here(a); a64_cbz(a, 1, TB, 0);
+    a64_ldr_uoff(a, 3, T4, TB, offsetof(BbWatch, count));
+    a64_logic_imm(a, 0, 1, T5, T4, 0, 6); /* count & 63 */
+    a64_add_imm(a, 1, T3, TB, offsetof(BbWatch, records), 0);
+    a64_arith(a, 0, 1, T3, T3, T5, 0, 6); /* record = records + index * 64 */
+    a64_str_uoff(a, 3, XZR, T3, offsetof(BbWatchRecord, sequence));
+    a64_dmb_ish(a); /* invalidate the old slot before publishing new payload stores */
+    a64_str_uoff(a, 3, addr, T3, offsetof(BbWatchRecord, address));
+    a64_str_uoff(a, 3, rt, T3, offsetof(BbWatchRecord, value));
+    a64_mov_imm(a, T5, t->rip);
+    a64_str_uoff(a, 3, T5, T3, offsetof(BbWatchRecord, rip));
+    a64_mrs_cntvct(a, T5);
+    a64_str_uoff(a, 3, T5, T3, offsetof(BbWatchRecord, tick));
+    a64_add_imm(a, 1, T4, T4, 1, 0);
+    a64_mov(a, 1, T5, T4);
+    if (store_) {
+        a64_mov_imm(a, T5, UINT64_C(1) << 63);
+        a64_orr(a, 1, T5, T5, T4);
+    }
+    a64_add_imm(a, 1, T3, T3, offsetof(BbWatchRecord, sequence), 0);
+    a64_emit(a, 0xc89ffc00u | (uint32_t)T3 << 5 | T5); /* stlr sequence */
+    a64_emit(a, 0xc89ffc00u | (uint32_t)TB << 5 | T4); /* stlr count (offset 0) */
+    if (skip) a64_patch_bcond(skip, a64_here(a));
+    a64_patch_bcond(no_watch, a64_here(a));
+}
+
 /* Value of an operand (zero-extended to its size) in a register; may be the guest register
  * itself (64-bit or 32-bit reads, `*direct` set). */
 static int read_op(Tx *t, const BbInsn *in, const BbOp *op, int size, int tmp, int *direct) {
@@ -454,6 +534,7 @@ static int read_op(Tx *t, const BbInsn *in, const BbOp *op, int size, int tmp, i
         plain_access = stack_operand(op);
         load(t, size, tmp, TA);
         plain_access = 0;
+        watch_move(t, in, op, tmp, TA, 0);
         return tmp;
     case OP_IMM:
         a64_mov_imm(a, tmp, (uint64_t)op->disp & bb_mask(size));
@@ -477,6 +558,7 @@ static void write_op(Tx *t, const BbInsn *in, const BbOp *op, int size, int src)
         plain_access = stack_operand(op);
         store(t, size, src, TA);
         plain_access = 0;
+        watch_move(t, in, op, src, TA, 1);
     }
 }
 
@@ -2260,6 +2342,16 @@ static void *translate(BbBlock *block) {
     }
     pthread_jit_write_protect_np(0);
     Tx t = {.a = {code_next, code_next, code_end}, .block = block};
+    /* Translation metadata only: no instructions or callbacks added to guest execution. */
+    static int fault_map_enabled = -1;
+    if (fault_map_enabled < 0) {
+        const char *env = getenv("BB_JIT_FAULT_MAP");
+        fault_map_enabled = env && env[0] == '1';
+    }
+    if (fault_map_enabled) {
+        t.fault_map = calloc(64 + MAX_SLOW, sizeof(*t.fault_map));
+        if (!t.fault_map) abort();
+    }
     uint32_t *start = code_next;
     uint64_t rip = block->start;
     int ended = 0, translated = 0;
@@ -2288,12 +2380,15 @@ static void *translate(BbBlock *block) {
             }
             fallback(&t, in);
         }
+        if (t.fault_map)
+            t.fault_map[t.fault_count++] = (InstructionRange){mark, a64_here(&t.a), rip};
         ++translated;
         rip += in->length;
     }
     void *code = NULL;
     if (translated == 0) {
         block->jit_failed = 1;
+        free(t.fault_map);
     } else {
         if (!ended) exit_to(&t, rip);
         emit_slow_accesses(&t);
@@ -2305,12 +2400,22 @@ static void *translate(BbBlock *block) {
         sys_icache_invalidate(start, (size_t)(code_next - start) * 4);
         code = start;
         ++translated_blocks;
-        if (range_count == range_capacity) {
-            range_capacity = range_capacity ? range_capacity * 2 : 65536;
-            ranges = realloc(ranges, range_capacity * sizeof(*ranges));
-            if (!ranges) abort();
+        if (t.fault_map) {
+            InstructionRange *compact = realloc(t.fault_map, t.fault_count * sizeof(*compact));
+            if (compact) t.fault_map = compact;
         }
-        ranges[range_count++] = (CodeRange){start, code_next, block};
+        CodeRangeChunk *chunk = __atomic_load_n(&range_chunks, __ATOMIC_RELAXED);
+        int fresh = !chunk || chunk->count == RANGE_CHUNK_SIZE;
+        if (fresh) {
+            CodeRangeChunk *next = calloc(1, sizeof(*next));
+            if (!next) abort();
+            next->next = chunk;
+            chunk = next;
+        }
+        const size_t index = chunk->count;
+        chunk->entries[index] = (CodeRange){start, code_next, block, t.fault_map, t.fault_count};
+        __atomic_store_n(&chunk->count, index + 1, __ATOMIC_RELEASE);
+        if (fresh) __atomic_store_n(&range_chunks, chunk, __ATOMIC_RELEASE);
         map_block(start, code_next, block->start);
     }
     pthread_jit_write_protect_np(1);
@@ -2404,26 +2509,64 @@ int bbcpu_jit_translates(const BbInsn *in, uint64_t rip) {
     return handled;
 }
 
-/* A fault in translated code: the guest block, and the guest registers (fault reports). */
-int bbcpu_describe_fault(void *context, char *out, size_t size) {
+static const CodeRange *fault_range(void *context) {
     ucontext_t *uc = context;
     const uint64_t pc = uc->uc_mcontext->__ss.__pc;
-    if (!code_base || pc < (uint64_t)(uintptr_t)code_base || pc >= (uint64_t)(uintptr_t)code_next) return 0;
-    size_t lo = 0, hi = range_count;
-    while (lo < hi) {
-        const size_t mid = (lo + hi) / 2;
-        if ((uint64_t)(uintptr_t)ranges[mid].end <= pc) lo = mid + 1; else hi = mid;
+    if (!code_base || pc < (uint64_t)(uintptr_t)code_base || pc >= (uint64_t)(uintptr_t)code_next) return NULL;
+    for (const CodeRangeChunk *chunk = __atomic_load_n(&range_chunks, __ATOMIC_ACQUIRE);
+         chunk; chunk = chunk->next) {
+        size_t lo = 0, hi = __atomic_load_n(&chunk->count, __ATOMIC_ACQUIRE);
+        const size_t count = hi;
+        if (!count || pc < (uint64_t)(uintptr_t)chunk->entries[0].start ||
+            pc >= (uint64_t)(uintptr_t)chunk->entries[count - 1].end) continue;
+        while (lo < hi) {
+            const size_t mid = (lo + hi) / 2;
+            if ((uint64_t)(uintptr_t)chunk->entries[mid].end <= pc) lo = mid + 1;
+            else hi = mid;
+        }
+        return lo < count && (uint64_t)(uintptr_t)chunk->entries[lo].start <= pc ?
+               &chunk->entries[lo] : NULL;
     }
+    return NULL;
+}
+
+int bbcpu_fault_guest_regs(void *context, BbGuestRegs *regs) {
+    const CodeRange *range = fault_range(context);
+    if (!range) return 0;
+    ucontext_t *uc = context;
     const uint64_t *x = uc->uc_mcontext->__ss.__x;
-    const uint64_t g[16] = {x[19], x[20], x[21], x[22], x[23], x[24], x[25], x[26],
-                            x[9], x[10], x[11], x[12], x[13], x[14], x[15], x[27]};
-    const BbBlock *b = lo < range_count && (uint64_t)(uintptr_t)ranges[lo].start <= pc ? ranges[lo].block : NULL;
+    for (unsigned i = 0; i < 16; ++i) regs->r[i] = x[G[i]];
+    regs->rip = 0; /* No exact location without translation metadata. */
+    const uint64_t pc = uc->uc_mcontext->__ss.__pc;
+    for (size_t i = 0; i < range->instruction_count; ++i) {
+        const InstructionRange *in = &range->instructions[i];
+        if (pc >= (uint64_t)(uintptr_t)in->start && pc < (uint64_t)(uintptr_t)in->end) {
+            regs->rip = in->rip;
+            break;
+        }
+    }
+    return 1;
+}
+
+/* A fault in translated code: the guest block, and the guest registers (fault reports). */
+int bbcpu_describe_fault(void *context, char *out, size_t size) {
+    const CodeRange *range = fault_range(context);
+    if (!range) return 0;
+    bbcpu_watch_dump();
+    ucontext_t *uc = context;
+    const uint64_t pc = uc->uc_mcontext->__ss.__pc;
+    BbGuestRegs regs;
+    bbcpu_fault_guest_regs(context, &regs);
+    const uint64_t *g = regs.r;
+    const BbBlock *b = range->block;
     snprintf(out, size,
              "  translated guest block %#llx (guest offset %#llx), +%llu host instructions\n"
+             "  exact guest instruction %#llx (guest offset %#llx; zero means unavailable)\n"
              "  rax=%#llx rcx=%#llx rdx=%#llx rbx=%#llx rsp=%#llx rbp=%#llx rsi=%#llx rdi=%#llx\n"
              "  r8=%#llx r9=%#llx r10=%#llx r11=%#llx r12=%#llx r13=%#llx r14=%#llx r15=%#llx\n",
              b ? (unsigned long long)b->start : 0ull, b ? (unsigned long long)(b->start - bb_image_base_for_reports()) : 0ull,
-             b ? (unsigned long long)((pc - (uint64_t)(uintptr_t)ranges[lo].start) / 4) : 0ull,
+             b ? (unsigned long long)((pc - (uint64_t)(uintptr_t)range->start) / 4) : 0ull,
+             (unsigned long long)regs.rip, regs.rip ? (unsigned long long)(regs.rip - bb_image_base_for_reports()) : 0ull,
              (unsigned long long)g[0], (unsigned long long)g[1], (unsigned long long)g[2], (unsigned long long)g[3],
              (unsigned long long)g[4], (unsigned long long)g[5], (unsigned long long)g[6], (unsigned long long)g[7],
              (unsigned long long)g[8], (unsigned long long)g[9], (unsigned long long)g[10], (unsigned long long)g[11],
@@ -2461,6 +2604,9 @@ int bbcpu_handle_alignment_fault(void *context) {
 }
 
 #else
+int bbcpu_fault_guest_regs(void *context, BbGuestRegs *regs) {
+    (void)context; (void)regs; return 0;
+}
 int bbcpu_describe_fault(void *context, char *out, size_t size) {
     (void)context; (void)out; (void)size;
     return 0;

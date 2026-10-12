@@ -56,6 +56,9 @@ C changed are compiled again.
 - REA (an MCP server with Ghidra, on the user's machine) answers "who calls this", "decompile
   this" and "what references this address" about the game's code; its output is game code and
   never goes into a repository.
+- Fault diagnostics: `BB_JIT_FAULT_MAP=1` reports the exact translated guest instruction;
+  `BB_JIT_WATCH` records selected field accesses without function-entry callbacks. Usage is in
+  `docs/ARM64_NATIVE.md`. Their game-derived output stays outside Git and the wiki.
 - Speed: the frame rate is bound by rendering; compare CPU time (`ps -o cputime=` over 30 s in
   the level) between alternating runs with and without the library.
 

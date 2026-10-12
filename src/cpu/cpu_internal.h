@@ -29,6 +29,17 @@ typedef union {
     double fd[4];
 } BbVec;
 
+enum { WATCH_RECORDS = 64 };
+typedef struct { uint64_t tick, rip, address, value, sequence, reserved[3]; } BbWatchRecord;
+_Static_assert(sizeof(BbWatchRecord) == 64 && WATCH_RECORDS == 64, "JIT watch ring addressing");
+typedef struct BbWatch {
+    uint64_t count;
+    BbWatchRecord records[WATCH_RECORDS];
+    struct BbWatch *next;
+    char name[32];
+} BbWatch;
+void bbcpu_watch_dump(void);
+
 typedef struct BbCpu {
     uint64_t r[16];
     uint64_t rip;
@@ -54,6 +65,7 @@ typedef struct BbCpu {
     uint64_t jit_link;
     struct BbJitCacheEntry *jit_cache;
     uint64_t instructions;
+    BbWatch *watch; /* allocated only for BB_JIT_WATCH diagnostics */
 } BbCpu;
 
 /* Operand of a decoded instruction (compact copy of Zydis's). */

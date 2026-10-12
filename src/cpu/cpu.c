@@ -45,6 +45,74 @@ void bbcpu_set_thread_pointer(uintptr_t tcb) {
     if (tls_cpu) apply_thread_pointer(tls_cpu);
 }
 
+static BbWatch *watch_threads;
+static _Thread_local char thread_label[32];
+static uint64_t watch_target;
+void bbcpu_set_thread_label(const char *name) {
+    snprintf(thread_label, sizeof(thread_label), "%s", name ? name : "unnamed");
+    if (tls_cpu && tls_cpu->watch)
+        memcpy(tls_cpu->watch->name, thread_label, sizeof(thread_label));
+}
+
+/* Per-thread storage is retained with the CPU for terminating diagnostics. */
+static void watch_init(BbCpu *cpu) {
+    const char *env = getenv("BB_JIT_WATCH");
+    if (!env || !*env) return;
+    BbWatch *watch = calloc(1, sizeof(*watch));
+    if (!watch) abort();
+    snprintf(watch->name, sizeof(watch->name), "%s", *thread_label ? thread_label : "unnamed");
+    BbWatch *head = __atomic_load_n(&watch_threads, __ATOMIC_ACQUIRE);
+    do { watch->next = head; }
+    while (!__atomic_compare_exchange_n(&watch_threads, &head, watch, 0,
+                                        __ATOMIC_RELEASE, __ATOMIC_ACQUIRE));
+    cpu->watch = watch;
+    __atomic_store_n(&watch_target, strtoull(env, NULL, 0), __ATOMIC_RELAXED);
+}
+
+void bbcpu_watch_write(uintptr_t address, size_t size) {
+#if defined(__aarch64__) && defined(__APPLE__)
+    if (!tls_cpu || !tls_cpu->watch) return;
+    const uint64_t target = __atomic_load_n(&watch_target, __ATOMIC_RELAXED);
+    if (target < address || target - address > size || size - (target - address) < 8) return;
+    BbWatch *w = tls_cpu->watch;
+    const uint64_t n = w->count;
+    BbWatchRecord *r = &w->records[n % WATCH_RECORDS];
+    __atomic_store_n(&r->sequence, 0, __ATOMIC_RELEASE);
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    r->address = target;
+    r->value = __atomic_load_n((const uint64_t *)(uintptr_t)target, __ATOMIC_RELAXED);
+    r->rip = bb_load(tls_cpu->r[RSP], 8); /* guest return address of the host import */
+    __asm__ volatile("mrs %0, cntvct_el0" : "=r"(r->tick));
+    __atomic_store_n(&r->sequence, (n + 1) | (UINT64_C(1) << 63), __ATOMIC_RELEASE);
+    __atomic_store_n(&w->count, n + 1, __ATOMIC_RELEASE);
+#else
+    (void)address; (void)size;
+#endif
+}
+
+void bbcpu_watch_dump(void) {
+    for (const BbWatch *w = __atomic_load_n(&watch_threads, __ATOMIC_ACQUIRE); w; w = w->next) {
+        const uint64_t count = __atomic_load_n(&w->count, __ATOMIC_ACQUIRE);
+        for (uint64_t n = count > WATCH_RECORDS ? count - WATCH_RECORDS : 0; n < count; ++n) {
+            const BbWatchRecord *r = &w->records[n % WATCH_RECORDS];
+            const uint64_t seq = __atomic_load_n(&r->sequence, __ATOMIC_ACQUIRE);
+            if ((seq & ~(UINT64_C(1) << 63)) != n + 1) continue;
+            const uint64_t tick = __atomic_load_n(&r->tick, __ATOMIC_RELAXED);
+            const uint64_t rip = __atomic_load_n(&r->rip, __ATOMIC_RELAXED);
+            const uint64_t value = __atomic_load_n(&r->value, __ATOMIC_RELAXED);
+            const uint64_t address = __atomic_load_n(&r->address, __ATOMIC_RELAXED);
+            __atomic_thread_fence(__ATOMIC_ACQUIRE);
+            if (__atomic_load_n(&r->sequence, __ATOMIC_ACQUIRE) != seq) continue;
+            char line[224];
+            const int len = snprintf(line, sizeof(line),
+                "  JIT watch thread %s tick %llu %s rip %#llx address %#llx value %#llx seq %llu\n",
+                w->name, (unsigned long long)tick, seq >> 63 ? "store" : "load",
+                (unsigned long long)rip, (unsigned long long)address, (unsigned long long)value, (unsigned long long)(n + 1));
+            if (len > 0) { ssize_t written = write(2, line, (size_t)len); (void)written; }
+        }
+    }
+}
+
 static BbCpu *current_cpu(void) {
     if (tls_cpu) return tls_cpu;
     BbCpu *cpu = calloc(1, sizeof(*cpu));
@@ -54,6 +122,7 @@ static BbCpu *current_cpu(void) {
     cpu->flags = 2;
     apply_thread_pointer(cpu);
     __atomic_add_fetch(&cpus_created, 1, __ATOMIC_RELAXED);
+    watch_init(cpu);
     tls_cpu = cpu;
     return cpu;
 }

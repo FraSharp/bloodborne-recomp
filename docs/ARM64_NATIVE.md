@@ -72,6 +72,20 @@ Hosts can watch guest functions: `bbcpu_set_probe` (a host function at a guest a
 registers) and `bbcpu_set_guard` (one on entry and one on return: the return address is kept on a
 per-thread stack). bloodborne-runtime's `BB_CB_PROBE` and command buffer guards use them.
 
+`BB_JIT_FAULT_MAP=1` retains instruction ranges during translation so a terminating fault
+report identifies the exact guest instruction, including out-of-line unaligned accesses. It
+adds no instructions or callbacks to execution. `bbcpu_fault_guest_regs` exposes that location
+and the guest registers to the host's fault handler; without the map its location is zero.
+
+`BB_JIT_WATCH=address:displacement[:displacement...]` records selected 64-bit MOV loads and
+stores to one address in a 64-entry ring per thread. `BB_JIT_WATCH_LOAD=address` also records
+that instruction's load when its effective address differs. Recording is inline, with no host
+calls, allocation or locks on the execution path. The terminating report prints the last
+records with thread labels and virtual-counter ticks. The host may use `bbcpu_watch_write` to
+record memory writes made by its libc wrappers. These diagnostics change timing; use them to
+identify a transition, then validate the fix with them off. Never commit their game-derived
+output. `tools/cpu/test_jit.sh` includes synthetic fault, slow-access and ring-wrap checks.
+
 ## Pitfalls found
 
 - 16 KiB host pages: the GPU write tracker uses 16 KiB pages (`TRACKER_PAGE_BITS=14`).

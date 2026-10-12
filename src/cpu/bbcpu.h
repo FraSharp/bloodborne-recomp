@@ -41,6 +41,8 @@ void bbcpu_set_probe(uint64_t address, BbProbe fn, uint32_t tag);
 typedef uint64_t (*BbGuardEnter)(const uint64_t regs[16], uint32_t tag);
 typedef void (*BbGuardLeave)(uint64_t cookie);
 void bbcpu_set_guard(uint64_t address, BbGuardEnter enter, BbGuardLeave leave, uint32_t tag);
+/* Active guards on this thread, filtered by owner; terminating diagnostics only. */
+size_t bbcpu_guard_cookies(BbGuardLeave leave, uint64_t *cookies, size_t capacity);
 /* BB_RECOMP_LIB: recompiled game functions replace the translated ones (recomp.c). */
 void bbcpu_recomp_load(uint64_t image_base);
 /* Like bbcpu_call on a new guest stack [stack, stack + size) (thread entry, game entry). */
@@ -48,6 +50,10 @@ uint64_t bbcpu_call_on_stack(uintptr_t fn, int count, const uint64_t *args, void
                              size_t size);
 /* The guest thread pointer (TCB, the guest's fs base) of this thread. */
 void bbcpu_set_thread_pointer(uintptr_t tcb);
+/* Optional diagnostic label for the calling thread. */
+void bbcpu_set_thread_label(const char *name);
+/* Note a completed host memory write for opt-in JIT watch diagnostics. */
+void bbcpu_watch_write(uintptr_t address, size_t size);
 /* The GS displacement of the loader's rewritten `mov rax, fs:[0]` (relocation kind 3). */
 void bbcpu_set_tls_displacement(uint32_t displacement);
 /* Whether address is guest code. */
@@ -70,6 +76,9 @@ uint64_t bbcpu_tsc(void);
 
 /* A fault in translated code that only needs an unaligned access emulated (arm64): handled. */
 int bbcpu_handle_alignment_fault(void *context);
+/* Registers at a translated fault; rip is exact with BB_JIT_FAULT_MAP=1, otherwise zero.
+ * Returns 0 outside translated code. Called only by a terminating fault handler. */
+int bbcpu_fault_guest_regs(void *context, BbGuestRegs *regs);
 /* Describes a fault in translated code (guest block and registers); 0 when not one. */
 int bbcpu_describe_fault(void *context, char *out, size_t size);
 
@@ -85,11 +94,14 @@ static inline uint64_t bbcpu_call(uintptr_t fn, int count, const uint64_t *args)
     (void)fn; (void)count; (void)args; return 0;
 }
 static inline void bbcpu_set_thread_pointer(uintptr_t tcb) { (void)tcb; }
+static inline void bbcpu_set_thread_label(const char *name) { (void)name; }
+static inline void bbcpu_watch_write(uintptr_t address, size_t size) { (void)address; (void)size; }
 static inline uint64_t bbcpu_tsc(void) { return 0; }
 static inline int bbcpu_handle_alignment_fault(void *context) { (void)context; return 0; }
 static inline int bbcpu_describe_fault(void *context, char *out, size_t size) { (void)context; (void)out; (void)size; return 0; }
 #define BBCPU_TSC_HZ UINT64_C(1600000000)
 typedef struct { uint64_t r[16]; uint64_t rip; } BbGuestRegs;
+static inline int bbcpu_fault_guest_regs(void *context, BbGuestRegs *regs) { (void)context; (void)regs; return 0; }
 static inline void bbcpu_set_trap_handler(int (*handler)(BbGuestRegs *regs)) { (void)handler; }
 #endif
 

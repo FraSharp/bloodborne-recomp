@@ -71,6 +71,13 @@ typedef struct { uint64_t ret, cookie; BbGuardLeave leave; } GuardFrame;
 static _Thread_local GuardFrame guard_frames[GUARD_DEPTH];
 static _Thread_local int guard_depth;
 
+size_t bbcpu_guard_cookies(BbGuardLeave leave, uint64_t *cookies, size_t capacity) {
+    size_t count = 0;
+    for (int i = 0; i < guard_depth && count < capacity; ++i)
+        if (guard_frames[i].leave == leave) cookies[count++] = guard_frames[i].cookie;
+    return count;
+}
+
 void bbcpu_run_probe(BbCpu *cpu) {
     /* Several entries may share the address (a probe and a guard): all run. */
     for (const Probe *p = probes[bucket(cpu->rip)]; p; p = p->next) {
