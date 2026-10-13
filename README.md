@@ -13,7 +13,8 @@ functions against the original. Nothing here depends on an operating system: pro
 |---|---|
 | **bloodborne-recomp** (this one) | The recompiler and bbcpu: portable |
 | [bloodborne-runtime](https://github.com/bloodborne-native/bloodborne-runtime) | Loads the game: the PS4 libraries, the renderer; loads the recompiled library |
-| [bloodborne-mac](https://github.com/bloodborne-native/bloodborne-mac) | The macOS app, built on both |
+| [bloodborne-launcher](https://github.com/bloodborne-native/bloodborne-launcher) | The independent launcher, packaged in the macOS app |
+| [bloodborne-mac](https://github.com/bloodborne-native/bloodborne-mac) | Packages the macOS app, built on runtime and recomp |
 
 ## Status
 
