@@ -84,6 +84,9 @@ int bbcpu_describe_fault(void *context, char *out, size_t size);
 
 /* Statistics and the guest location of this thread, for logs. */
 uint64_t bbcpu_guest_rip(void);
+/* In a host import called from guest code: the guest return address (the game's call site,
+ * past its call), read at the guest stack pointer; 0 when not known. */
+uint64_t bbcpu_import_return(void);
 void bbcpu_report(void);
 
 #else
@@ -97,6 +100,7 @@ static inline void bbcpu_set_thread_pointer(uintptr_t tcb) { (void)tcb; }
 static inline void bbcpu_set_thread_label(const char *name) { (void)name; }
 static inline void bbcpu_watch_write(uintptr_t address, size_t size) { (void)address; (void)size; }
 static inline uint64_t bbcpu_tsc(void) { return 0; }
+static inline uint64_t bbcpu_import_return(void) { return 0; }
 static inline int bbcpu_handle_alignment_fault(void *context) { (void)context; return 0; }
 static inline int bbcpu_describe_fault(void *context, char *out, size_t size) { (void)context; (void)out; (void)size; return 0; }
 #define BBCPU_TSC_HZ UINT64_C(1600000000)
