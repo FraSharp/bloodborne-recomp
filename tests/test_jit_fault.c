@@ -97,6 +97,39 @@ static void check(const unsigned char *code, size_t size, size_t fault_offset) {
     munmap(guest, 16384);
 }
 
+static void check_null_branch(void) {
+    unsigned char *guest = mmap(NULL, 16384, PROT_READ | PROT_WRITE,
+                                MAP_PRIVATE | MAP_ANON, -1, 0);
+    assert(guest != MAP_FAILED);
+    /* xor eax,eax; jmp rax: an empty indirect-cache entry must not branch to host zero. */
+    const unsigned char code[] = {0x31, 0xc0, 0xff, 0xe0};
+    memcpy(guest, code, sizeof(code));
+    int fds[2];
+    assert(pipe(fds) == 0);
+    const pid_t child = fork();
+    assert(child >= 0);
+    if (!child) {
+        close(fds[0]);
+        assert(dup2(fds[1], STDERR_FILENO) == STDERR_FILENO);
+        close(fds[1]);
+        bbcpu_add_guest_code((uintptr_t)guest, 16384);
+        bbcpu_call((uintptr_t)guest, 0, NULL);
+        _exit(19);
+    }
+    close(fds[1]);
+    char message[256] = {0};
+    const ssize_t got = read(fds[0], message, sizeof(message) - 1);
+    close(fds[0]);
+    int status;
+    assert(waitpid(child, &status, 0) == child);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == 30);
+    assert(got > 0 && strstr(message, "null guest branch"));
+    char site[32];
+    snprintf(site, sizeof(site), "%#llx", (unsigned long long)(uintptr_t)(guest + 2));
+    assert(strstr(message, site));
+    munmap(guest, 16384);
+}
+
 int main(void) {
     setenv("BB_JIT_FAULT_MAP", "1", 1);
     setenv("BB_JIT", "1", 1);
@@ -114,6 +147,7 @@ int main(void) {
     const unsigned char finish[] = {0x48,0x8b,0x07,0xc3};
     memcpy(watch + 519, finish, sizeof(finish));
     check(watch, 523, 519);
+    check_null_branch();
     puts("PASS: translated faults and inline watched load/store values");
     return 0;
 }

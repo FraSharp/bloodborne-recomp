@@ -299,9 +299,19 @@ static void exit_to_reg(Tx *t, int reg) {
     a64_arith(a, 0, 1, TB, TB, T4, 0, 4);
     a64_ldp(a, T4, T5, TB, 0);
     a64_subs(a, 1, XZR, T4, TA);
-    a64_bcond(a, CC_NE, 2);
+    a64_bcond(a, CC_NE, 3);
+    /* An empty cache entry has both fields zero. A guest null branch must go through the
+     * dispatcher rather than branch to host address zero. */
+    a64_cbz(a, 1, T5, 2);
     a64_br(a, T5);
     a64_str_uoff(a, 3, TA, CPU, OFF(rip));
+    /* On a null target, retain the guest branch site for the dispatcher's report. This
+     * slow path is also reached for a miss in the indirect branch cache. */
+    uint32_t *non_null = a64_here(a);
+    a64_cbnz(a, 1, TA, 0);
+    a64_mov_imm(a, TB, t->rip);
+    a64_str_uoff(a, 3, TB, CPU, OFF(jit_link));
+    a64_patch_bcond(non_null, a64_here(a));
     a64_b(a, (int32_t)(exit_stub - a64_here(a)));
 }
 
@@ -2460,6 +2470,14 @@ int bbcpu_jit_run(BbCpu *cpu, uint64_t stop) {
             continue;
         }
         if (!bbcpu_is_guest_code(cpu->rip)) {
+            if (!cpu->rip) {
+                const uint64_t site = cpu->jit_link;
+                fprintf(stderr, "STOP: bbcpu: null guest branch at %#llx (guest offset %#llx), rsp=%#llx\n",
+                        (unsigned long long)site,
+                        (unsigned long long)(site ? site - bb_image_base_for_reports() : 0),
+                        (unsigned long long)cpu->r[RSP]);
+                _Exit(30);
+            }
             cpu->jit_link = 0;
             jit_to_x86(cpu);
             if (bbcpu_return_hook) bbcpu_return_hook(cpu);
