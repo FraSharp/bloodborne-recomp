@@ -292,6 +292,12 @@ static int in_set(const OffsetSet *set, uint64_t offset) {
     return set->n && bsearch(&offset, set->v, set->n, sizeof(*set->v), by_value) != NULL;
 }
 
+static size_t recomp_used;
+
+size_t bbcpu_recomp_functions(void) {
+    return recomp_used;
+}
+
 void bbcpu_recomp_load(uint64_t image_base) {
     recomp_image_base = image_base;
     const char *path = getenv("BB_RECOMP_LIB");
@@ -321,6 +327,7 @@ void bbcpu_recomp_load(uint64_t image_base) {
         if (functions[i].direct && !no_direct()) *functions[i].direct = functions[i].fn;
         ++used;
     }
+    recomp_used = used;
     printf("Recompiled: %zu of %zu game functions replaced, %zu changed by patches (%s)\n", used, count,
            changed, path);
     pthread_t thread;

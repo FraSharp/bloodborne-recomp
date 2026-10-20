@@ -45,6 +45,8 @@ void bbcpu_set_guard(uint64_t address, BbGuardEnter enter, BbGuardLeave leave, u
 size_t bbcpu_guard_cookies(BbGuardLeave leave, uint64_t *cookies, size_t capacity);
 /* BB_RECOMP_LIB: recompiled game functions replace the translated ones (recomp.c). */
 void bbcpu_recomp_load(uint64_t image_base);
+/* How many game functions the recompiled library replaced (0: none loaded). */
+size_t bbcpu_recomp_functions(void);
 /* Like bbcpu_call on a new guest stack [stack, stack + size) (thread entry, game entry). */
 uint64_t bbcpu_call_on_stack(uintptr_t fn, int count, const uint64_t *args, void *stack,
                              size_t size);
