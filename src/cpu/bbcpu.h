@@ -106,6 +106,8 @@ void bbcpu_report(void);
 #else
 static inline int bbcpu_enabled(void) { return 0; }
 static inline int bbcpu_is_guest(uintptr_t address) { (void)address; return 0; }
+static inline void bbcpu_add_guest_code(uintptr_t start, size_t size) { (void)start; (void)size; }
+static inline void bbcpu_recomp_exclude(uint64_t address, size_t size) { (void)address; (void)size; }
 static inline void bbcpu_invalidate(uintptr_t address, size_t size) { (void)address; (void)size; }
 static inline uint64_t bbcpu_call(uintptr_t fn, int count, const uint64_t *args) {
     (void)fn; (void)count; (void)args; return 0;
