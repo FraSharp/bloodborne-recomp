@@ -71,6 +71,11 @@ code map, for `tools/recomp/sample_guest.py` with macOS `sample`), `BB_JIT_DUMP=
 Hosts can watch guest functions: `bbcpu_set_probe` (a host function at a guest address, with the
 registers) and `bbcpu_set_guard` (one on entry and one on return: the return address is kept on a
 per-thread stack). bloodborne-runtime's `BB_CB_PROBE` and command buffer guards use them.
+An `int3` in guest code goes to the trap handlers (`bbcpu_set_trap_handler`, tried in order)
+with the general registers; `bbcpu_trap_state` gives the handler the flags, MXCSR and YMM
+registers too. bloodborne-runtime's game-code hooks (bbport 0.6's interface) jump to stubs
+`int3; replaced instructions; jmp back` in a guest code range, so a hook sees and may change the
+whole register state at any instruction.
 
 `BB_JIT_FAULT_MAP=1` retains instruction ranges during translation so a terminating fault
 report identifies the exact guest instruction, including out-of-line unaligned accesses. It

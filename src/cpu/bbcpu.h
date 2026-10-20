@@ -45,6 +45,9 @@ void bbcpu_set_guard(uint64_t address, BbGuardEnter enter, BbGuardLeave leave, u
 size_t bbcpu_guard_cookies(BbGuardLeave leave, uint64_t *cookies, size_t capacity);
 /* BB_RECOMP_LIB: recompiled game functions replace the translated ones (recomp.c). */
 void bbcpu_recomp_load(uint64_t image_base);
+/* Code at [address, address + size) is rewritten while the game runs: the recompiled library
+ * leaves the functions holding it to the translator. Set before bbcpu_recomp_load. */
+void bbcpu_recomp_exclude(uint64_t address, size_t size);
 /* How many game functions the recompiled library replaced (0: none loaded). */
 size_t bbcpu_recomp_functions(void);
 /* Like bbcpu_call on a new guest stack [stack, stack + size) (thread entry, game entry). */
@@ -70,7 +73,16 @@ typedef struct {
     uint64_t r[16]; /* rax rcx rdx rbx rsp rbp rsi rdi r8-r15 */
     uint64_t rip;
 } BbGuestRegs;
+/* Handlers are tried in the order they were set (at most four) until one handles the trap. */
 void bbcpu_set_trap_handler(int (*handler)(BbGuestRegs *regs));
+/* In a trap handler: the rest of the thread's guest state, readable and writable until the
+ * handler returns (rflags, MXCSR, ymm0-15 as 32 bytes each). Returns 0 outside a handler. */
+typedef struct {
+    uint64_t *flags;
+    uint32_t *mxcsr;
+    uint8_t (*ymm)[32];
+} BbTrapState;
+int bbcpu_trap_state(BbTrapState *state);
 
 /* The guest's time stamp counter (rdtsc) and its frequency: 1.6 GHz like the PS4's. */
 uint64_t bbcpu_tsc(void);
@@ -109,6 +121,8 @@ static inline int bbcpu_describe_fault(void *context, char *out, size_t size) { 
 typedef struct { uint64_t r[16]; uint64_t rip; } BbGuestRegs;
 static inline int bbcpu_fault_guest_regs(void *context, BbGuestRegs *regs) { (void)context; (void)regs; return 0; }
 static inline void bbcpu_set_trap_handler(int (*handler)(BbGuestRegs *regs)) { (void)handler; }
+typedef struct { uint64_t *flags; uint32_t *mxcsr; uint8_t (*ymm)[32]; } BbTrapState;
+static inline int bbcpu_trap_state(BbTrapState *state) { (void)state; return 0; }
 #endif
 
 /* Convenience for host code calling guest function pointers. */

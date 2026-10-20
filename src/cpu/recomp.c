@@ -294,6 +294,26 @@ static int in_set(const OffsetSet *set, uint64_t offset) {
 
 static size_t recomp_used;
 
+/* Code the runtime rewrites while the game runs (live switches): the functions that hold it stay
+ * with the translator, whose blocks bbcpu_invalidate drops. */
+enum { MAX_EXCLUDED = 64 };
+static struct { uint64_t start, end; } excluded[MAX_EXCLUDED];
+static int excluded_count;
+void bbcpu_recomp_exclude(uint64_t address, size_t size) {
+    if (excluded_count == MAX_EXCLUDED) {
+        fputs("Recompiled: too many excluded ranges\n", stderr);
+        abort();
+    }
+    excluded[excluded_count].start = address;
+    excluded[excluded_count].end = address + size;
+    ++excluded_count;
+}
+static int is_excluded(uint64_t start, uint64_t size) {
+    for (int i = 0; i < excluded_count; ++i)
+        if (excluded[i].start < start + size && start < excluded[i].end) return 1;
+    return 0;
+}
+
 size_t bbcpu_recomp_functions(void) {
     return recomp_used;
 }
@@ -316,9 +336,13 @@ void bbcpu_recomp_load(uint64_t image_base) {
     const RcFunction *functions = init(&api, &count);
     /* BB_RECOMP_OFF: these not; BB_RECOMP_ONLY: only these (bisecting). */
     const OffsetSet off = offset_set("BB_RECOMP_OFF"), only = offset_set("BB_RECOMP_ONLY");
-    size_t used = 0, changed = 0;
+    size_t used = 0, changed = 0, kept = 0;
     for (size_t i = 0; i < count; ++i) {
         if (in_set(&off, functions[i].offset) || (only.given && !in_set(&only, functions[i].offset))) continue;
+        if (is_excluded(image_base + functions[i].offset, functions[i].size)) {
+            ++kept;
+            continue;
+        }
         if (bbcpu_recomp_hash(image_base + functions[i].offset, functions[i].size) != functions[i].hash) {
             ++changed; /* patched since (game patches, hooks): the translator runs it */
             continue;
@@ -328,8 +352,8 @@ void bbcpu_recomp_load(uint64_t image_base) {
         ++used;
     }
     recomp_used = used;
-    printf("Recompiled: %zu of %zu game functions replaced, %zu changed by patches (%s)\n", used, count,
-           changed, path);
+    printf("Recompiled: %zu of %zu game functions replaced, %zu changed by patches, %zu rewritten "
+           "live (%s)\n", used, count, changed, kept, path);
     pthread_t thread;
     if (used && pthread_create(&thread, NULL, report, NULL) == 0) pthread_detach(thread);
 }

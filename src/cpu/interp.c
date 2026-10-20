@@ -178,8 +178,29 @@ static void call_host(BbCpu *cpu, uint64_t target, uint64_t stack_args) {
 
 /* ---- the interpreter ---- */
 
-static int (*trap_handler)(BbGuestRegs *regs);
-void bbcpu_set_trap_handler(int (*handler)(BbGuestRegs *regs)) { trap_handler = handler; }
+/* int3 handlers, tried in the order they were set (the runtime's guest hooks, code hooks). */
+enum { MAX_TRAP_HANDLERS = 4 };
+static int (*trap_handlers[MAX_TRAP_HANDLERS])(BbGuestRegs *regs);
+static int trap_handler_count;
+void bbcpu_set_trap_handler(int (*handler)(BbGuestRegs *regs)) {
+    for (int i = 0; i < trap_handler_count; ++i)
+        if (trap_handlers[i] == handler) return;
+    if (trap_handler_count == MAX_TRAP_HANDLERS) {
+        fputs("bbcpu: too many trap handlers\n", stderr);
+        abort();
+    }
+    trap_handlers[trap_handler_count++] = handler;
+}
+/* The thread's state while its trap handler runs (bbcpu_trap_state). */
+_Static_assert(sizeof(BbVec) == 32, "bbcpu_trap_state: ymm registers of 32 bytes");
+static _Thread_local BbCpu *trap_cpu;
+int bbcpu_trap_state(BbTrapState *state) {
+    if (!trap_cpu) return 0;
+    state->flags = &trap_cpu->flags;
+    state->mxcsr = &trap_cpu->mxcsr;
+    state->ymm = (uint8_t (*)[32])(void *)trap_cpu->v;
+    return 1;
+}
 
 /* A 1.6 GHz counter, like the PS4's TSC (BBCPU_TSC_HZ). On arm64 the virtual counter scaled by
  * num / den, which translated rdtsc computes the same way (jit_arm64.c). */
@@ -872,11 +893,16 @@ static uint64_t step(BbCpu *cpu, const BbInsn *in) {
         return target;
     }
     case M(INT3): {
-        if (!trap_handler) bbcpu_fatal(cpu, in, "int3 without a trap handler");
+        if (!trap_handler_count) bbcpu_fatal(cpu, in, "int3 without a trap handler");
         BbGuestRegs regs;
         memcpy(regs.r, cpu->r, sizeof(regs.r));
         regs.rip = next;
-        if (!trap_handler(&regs)) bbcpu_fatal(cpu, in, "unhandled int3");
+        BbCpu *const outer = trap_cpu;
+        trap_cpu = cpu;
+        int handled = 0;
+        for (int i = 0; i < trap_handler_count && !handled; ++i) handled = trap_handlers[i](&regs);
+        trap_cpu = outer;
+        if (!handled) bbcpu_fatal(cpu, in, "unhandled int3");
         memcpy(cpu->r, regs.r, sizeof(regs.r));
         return regs.rip;
     }

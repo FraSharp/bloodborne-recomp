@@ -96,7 +96,9 @@ again only the files whose C changed:
   as well.
 
 The game loads the library (`BB_RECOMP_LIB`) after its patches: a function whose code changed since
-it was generated (a game patch, a hook: `bbcpu_recomp_hash`) stays with the translator.
+it was generated (a game patch, a hook: `bbcpu_recomp_hash`) stays with the translator, and so
+does one holding code the runtime rewrites while the game runs (`bbcpu_recomp_exclude`: the live
+effect switches).
 `BB_RECOMP_OFF=OFFSET,...` (or `@FILE`) switches chosen ones off, `BB_RECOMP_ONLY` keeps only the
 listed ones (bisecting), `BB_RECOMP_THREADS` / `BB_RECOMP_NOT_THREADS`
 limit them to some threads (by name), `BB_RECOMP_NODIRECT=1` sends every call through the
