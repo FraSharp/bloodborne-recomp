@@ -241,19 +241,9 @@ C++ RTTI. About 500 source paths in assertion and log messages name the librarie
 The labels are a first pass: a library's code is found by the paths in its own messages and the
 functions between them, so the boundaries between game, FD4 and Dantelion2 are approximate.
 
-## First profile (2026-10-10, cutscene in the Hunter's Dream)
+## Where the CPU time goes
 
-The game's main thread is about 95% busy; 85% of its samples are in translated code. 287 of its
-functions ran; the busiest 69 take half of the time. The busiest one (`0x21b8710`, 13.8%) runs
-jobs and updates shared counters with atomic operations: the main thread waiting on, or helping,
-worker threads.
-
-## Gameplay profile (2026-10-10, 20 s in the Hunter's Dream)
-
-The main thread's time is spread thin: 933 functions ran, and the busiest 145 take half of it. The
-busiest one is the job loop (7.3%); no other function takes more than 1.5%. No small set of
-functions dominates: the CPU side gets faster by recompiling all of them.
-
-A batch of 16 of the hottest small and medium functions (46 to 1,125 bytes; game, FD4 and
-Dantelion2 code), 60 calls each, recorded across loading, the cutscene and play: 15 replay exactly
-on every call; one (`0x1d37400`) on 8 of 60, not explained yet.
+Profiles in the Hunter's Dream (2026-10-10): the game's main thread is about 95% busy in a
+cutscene and spread thin in play (933 functions ran in 20 s; the busiest 145 take half of the
+time; the job loop is the largest at 7.3%). No small set of functions dominates, so the CPU side
+gets faster by recompiling all of them, which R2 did; R3 makes that code cheaper.

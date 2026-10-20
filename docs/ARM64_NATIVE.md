@@ -41,7 +41,7 @@ only through imports the runtime already implements), no self-modifying code, on
    memory ordering mode), checked against the interpreter.
 4. Performance: translation cache across runs, hot paths.
 
-## Status (2026-10-09)
+## Status
 
 - Stages 1–3 done: the native arm64 build is the default on Apple Silicon (bloodborne-runtime's `build.sh`, `run.sh`;
   `BB_ARCH=x86_64` builds the Rosetta 2 one). The game boots, loads saves and plays.

@@ -62,7 +62,7 @@ C changed are compiled again.
 - Speed: the frame rate is bound by rendering; compare CPU time (`ps -o cputime=` over 30 s in
   the level) between alternating runs with and without the library.
 
-## Where it stands (2026-10-11) and what is next
+## Where it stands and what is next
 
 - R2 done: all 241,031 functions generated (98.8% of instructions in C), 240,995 run in the game.
   Same frame rate as the translator but **20–30% more CPU time** (5.2–5.5 cores against 4.3 in the
@@ -83,37 +83,30 @@ C changed are compiled again.
 - Next after R3: more routes (other areas, bosses), names for known library code (zlib, Lua) and
   the game's imports in the generated C (R4), recompiling at install time from the launcher.
 
-## Working rules (all three repositories)
+## Working rules (all four repositories)
 
-- **The project is three repositories**, nested as submodules:
+- **The project is four repositories**, nested as submodules:
   [bloodborne-mac](https://github.com/bloodborne-native/bloodborne-mac) (the app) ⊃ `runtime/` =
   [bloodborne-runtime](https://github.com/bloodborne-native/bloodborne-runtime) ⊃ `recomp/` =
-  [bloodborne-recomp](https://github.com/bloodborne-native/bloodborne-recomp). Commit in the repository
-  that owns the file, push it, then bump the submodule pointer in the parent (runtime → recomp,
-  mac → runtime) and push that too. Submodules are checked out at a commit (detached HEAD):
-  before editing inside `runtime/` or `runtime/recomp/`, run `git checkout main` (and
-  `git pull`) there. Separate clones of each repository side by side work the same way.
-- **Before any push, check `git remote get-url origin`** (a clone once still pointed at a local
-  repository and a force-push landed there). Push to `main`; ask before force-pushing anything
-  that existed before this session.
-- **Commits:** a short subject, a body that says what changed and why (numbers when measured), and
-  the trailer the session asks for (`Co-Authored-By: ...`).
-- **Credits:** this work is built on [bbport](https://github.com/deadinside28/bloodborne_pc) by
-  deadinside28 and on [shadPS4](https://github.com/shadps4-emu/shadPS4); keep them credited where
-  they are (README, docs/CREDITS.md, the wikis). Code taken from another project or fork is
-  credited in the same commit: CREDITS.md, the wiki's credits page, the commit message and a short
-  code comment.
+  [bloodborne-recomp](https://github.com/bloodborne-native/bloodborne-recomp); the app also has
+  `launcher/` = [bloodborne-launcher](https://github.com/bloodborne-native/bloodborne-launcher).
+  Commit in the repository that owns the file, push it, then bump the submodule pointer in the
+  parent and push that too. Submodules are checked out at a commit: run `git checkout main` (and
+  `git pull`) there before editing.
+- **Before any push, check `git remote get-url origin`.** Push to `main`; ask before
+  force-pushing anything that existed before this session.
+- **Commits:** a short subject, a body that says what changed and why (numbers when measured),
+  and the trailer the session asks for.
+- **Credits:** built on [bbport](https://github.com/deadinside28/bloodborne_pc) by deadinside28
+  and on [shadPS4](https://github.com/shadps4-emu/shadPS4); keep them credited. Code taken from
+  another project or fork is credited in the same commit: CREDITS.md, the wiki's credits page,
+  the commit message and a short code comment.
 - **No game code, ever:** no decompiled or generated game code, no game files, no records of game
-  memory in any repository. Docs and wikis talk about the recompiler only (not about decompiled
-  code or private folders).
-- **Testing the game:** run it in the background with `runtime/tools/test_run.sh NAME [VAR=...]`
-  (bloodborne-runtime's `tools/test_run.sh`): it copies the player's save first and never touches
-  the real one. Check `pgrep -x bb-probe` first; one game at a time. Test windows open on the
-  user's screen: say so before long batches of runs (bisections), and stop when asked.
-- **Never capture the user's screen.** Pictures come from the game itself: `tools/grab.sh NAME`
-  (its frame) or `tools/grab.sh --screen NAME` (with the in-game menu). Screenshots in English
-  (`BB_LANGUAGE=1 BB_UI_LANGUAGE=en`).
-- **Shell:** no `rm -rf` on variable paths (literal paths only); no `xargs ... sh -c '...'` (write
-  a script file instead).
-- **Docs:** plain, precise English; numbers measured, not guessed. When a milestone or a measured
-  number changes, update the docs and the wiki status pages (progress bars: 20 blocks, one per 5%).
+  memory in any repository or wiki.
+- **Testing the game:** `tools/test_run.sh` (a copy of the save; the real one is never written),
+  in English, one game at a time (`pgrep -x bb-probe` first). Test windows open on the user's
+  screen: say so before long batches, and stop when asked.
+- **Never capture the user's screen.** Pictures come from the game: `tools/grab.sh`.
+- **Shell:** no `rm -rf` on variable paths; no `xargs ... sh -c '...'`.
+- **Docs:** plain, precise English; numbers measured, not guessed. Docs say what is true now;
+  investigation logs do not go in docs (conclusions do). The wiki mirrors the docs; update both.
