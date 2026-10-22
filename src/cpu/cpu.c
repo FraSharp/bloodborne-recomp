@@ -45,6 +45,18 @@ void bbcpu_set_thread_pointer(uintptr_t tcb) {
     if (tls_cpu) apply_thread_pointer(tls_cpu);
 }
 
+/* MXCSR and FCW given to this thread before its BbCpu exists (bbcpu_set_fp_control). */
+static _Thread_local struct { int set; uint32_t mxcsr; uint16_t fcw; } tls_fp;
+void bbcpu_get_fp_control(uint32_t *mxcsr, uint16_t *fcw) {
+    if (tls_cpu) { *mxcsr = tls_cpu->mxcsr; *fcw = tls_cpu->fcw; }
+    else if (tls_fp.set) { *mxcsr = tls_fp.mxcsr; *fcw = tls_fp.fcw; }
+    else { *mxcsr = 0x1f80; *fcw = 0x37f; }
+}
+void bbcpu_set_fp_control(uint32_t mxcsr, uint16_t fcw) {
+    tls_fp.set = 1; tls_fp.mxcsr = mxcsr; tls_fp.fcw = fcw;
+    if (tls_cpu) { tls_cpu->mxcsr = mxcsr; tls_cpu->fcw = fcw; }
+}
+
 static BbWatch *watch_threads;
 static _Thread_local char thread_label[32];
 static uint64_t watch_target;
@@ -117,8 +129,8 @@ static BbCpu *current_cpu(void) {
     if (tls_cpu) return tls_cpu;
     BbCpu *cpu = calloc(1, sizeof(*cpu));
     if (!cpu) abort();
-    cpu->mxcsr = 0x1f80;
-    cpu->fcw = 0x37f;
+    cpu->mxcsr = tls_fp.set ? tls_fp.mxcsr : 0x1f80;
+    cpu->fcw = tls_fp.set ? tls_fp.fcw : 0x37f;
     cpu->flags = 2;
     apply_thread_pointer(cpu);
     __atomic_add_fetch(&cpus_created, 1, __ATOMIC_RELAXED);
