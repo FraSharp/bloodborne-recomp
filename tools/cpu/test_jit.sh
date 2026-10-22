@@ -5,7 +5,7 @@
 set -euo pipefail
 cd -- "$(dirname -- "$0")/../.."
 D=${BB_DEPS:-deps}
-clang -arch x86_64 -O2 -mavx -msse4.1 -mpopcnt -fno-builtin -fno-stack-protector -Wl,-no_pie -Wl,-image_base,0x30000000000 \
+clang -arch x86_64 -O2 -mavx -msse4.1 -mpopcnt -fno-builtin -fno-stack-protector -Wl,-no_pie -Wl,-no_fixup_chains -Wl,-image_base,0x30000000000 \
     tests/jit_guest.c -o out/jit_guest
 ROSETTA_ADVERTISE_AVX=1 out/jit_guest > out/jit_guest.expected
 clang -arch arm64 -O2 -std=gnu11 -I$D/include tests/test_jit.c src/cpu/cpu.c src/cpu/decode.c \
