@@ -19,9 +19,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Homebrew's clang, as on the maintainer's Mac: Apple's clang compiles the x86-64 test guest
+      # with AVX instructions bbcpu does not implement (the game does not use them).
       - name: Tools
         run: |
-          brew install ninja
+          brew install ninja llvm
+          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
           /usr/bin/pgrep -q oahd || softwareupdate --install-rosetta --agree-to-license
 
       - name: Zydis cache
