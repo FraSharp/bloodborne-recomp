@@ -1,0 +1,43 @@
+# Builds bbcpu and the recompiler's tools on Apple Silicon and runs the CPU tests: every push to
+# main and every pull request. The x86-64 halves of the tests run under Rosetta.
+name: macOS
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: macos-15 # Apple Silicon
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tools
+        run: |
+          brew install ninja
+          /usr/bin/pgrep -q oahd || softwareupdate --install-rosetta --agree-to-license
+
+      - name: Zydis cache
+        uses: actions/cache@v4
+        with:
+          path: deps
+          key: zydis-v4.1.1-${{ runner.os }}-${{ runner.arch }}
+
+      - name: Build
+        run: bash build.sh
+
+      # Interpreter and JIT against native x86-64 results (4,000 cases each), then fault reports.
+      - name: CPU tests
+        run: bash tools/cpu/test_jit.sh
+
+      - name: arm64 encodings
+        run: |
+          clang -arch arm64 -O2 -std=gnu11 tests/test_a64.c -o out/test_a64
+          out/test_a64

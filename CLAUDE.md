@@ -22,6 +22,7 @@ library the game loads (`BB_RECOMP_LIB`, in bloodborne-runtime). Plan, milestone
 
 ```sh
 ./build.sh                                    # Zydis into deps/, out/libbbcpu.a, scan, bbrecomp
+tools/cpu/test_jit.sh                         # CPU tests (CI runs them with the arm64 encodings)
 GAME=~/Downloads/PS4/Bloodborne/CUSA03173     # the user's dump
 python3 tools/recomp/ps4elf.py "$GAME/eboot.bin" out/eboot.elf
 python3 tools/recomp/pointers.py "$GAME/eboot.bin" out/recomp/pointers.txt
