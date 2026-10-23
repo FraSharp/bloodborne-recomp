@@ -947,6 +947,35 @@ int bbcpu_exec_vec(BbCpu *cpu, const BbInsn *in) {
         } else bbcpu_write(cpu, in, dst, v);
         return 1;
     }
+    case M(EXTRQ): case M(INSERTQ): {
+        /* SSE4A (AMD Jaguar; inFAMOUS Second Son uses both): a bit field of the low quadword,
+         * extracted (zero-extended) or inserted; the upper quadword is zeroed, as AMD's hardware
+         * does. Length 0 means 64. Immediate forms: length then index; register forms: the
+         * source's bits 5:0 and 13:8 (EXTRQ), or of its upper quadword (INSERTQ). Semantics as
+         * in HayatoG/iss_pc port/src/isa_emulate.c, checked there against AMD CPUs. */
+        BbVec d = vread(cpu, in, &in->op[0]);
+        BbVec s = {0};
+        uint64_t control;
+        if (m == M(EXTRQ)) {
+            if (in->op[1].type == OP_IMM) control = (uint64_t)(in->op[1].disp & 63) | (uint64_t)(in->op[2].disp & 63) << 8;
+            else { s = vread(cpu, in, &in->op[1]); control = s.q[0]; }
+        } else {
+            s = vread(cpu, in, &in->op[1]);
+            if (in->count > 2 && in->op[2].type == OP_IMM)
+                control = (uint64_t)(in->op[2].disp & 63) | (uint64_t)(in->op[3].disp & 63) << 8;
+            else control = s.q[1];
+        }
+        const unsigned length = control & 63, index = control >> 8 & 63;
+        const uint64_t mask = length == 0 ? ~UINT64_C(0) : (UINT64_C(1) << length) - 1;
+        if (m == M(EXTRQ)) d.q[0] = d.q[0] >> index & mask;
+        else {
+            const uint64_t field = mask << index; /* bits past 63 are dropped */
+            d.q[0] = (d.q[0] & ~field) | (s.q[0] << index & field);
+        }
+        d.q[1] = 0;
+        vwrite(cpu, in, &in->op[0], &d, 16);
+        return 1;
+    }
     case M(PINSRD): case M(VPINSRD): case M(PINSRQ): case M(VPINSRQ): case M(PINSRW): case M(VPINSRW):
     case M(PINSRB): case M(VPINSRB): {
         const Ops o = ops3(in);
