@@ -5,6 +5,11 @@
 #include <stdlib.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#if defined(__aarch64__) && defined(__APPLE__)
+#include <sys/sysctl.h>
+#elif defined(__aarch64__) && defined(__linux__)
+#include <sys/auxv.h>
+#endif
 
 /* The guest's stacks stay below 1 TiB like the PS4's (runtime_memory.c). */
 void *runtime_low_map(size_t size, int prot);
@@ -45,8 +50,33 @@ void bbcpu_set_thread_pointer(uintptr_t tcb) {
     if (tls_cpu) apply_thread_pointer(tls_cpu);
 }
 
-/* MXCSR FTZ (bit 15) or DAZ (bit 6) -> this host thread's FPCR.FZ (bit 24, flushes inputs and
- * outputs), so the native float code the translator emits flushes denormals as the guest asked.
+/* FEAT_AFP: FPCR.FIZ flushes denormal inputs on its own (Apple M3 and later; not M1/M2). */
+static int host_has_afp(void) {
+    static int afp = -1;
+    if (afp < 0) {
+        afp = 0;
+#if defined(__aarch64__) && defined(__APPLE__)
+        int v = 0;
+        size_t len = sizeof(v);
+        if (sysctlbyname("hw.optional.arm.FEAT_AFP", &v, &len, NULL, 0) == 0) afp = v != 0;
+#elif defined(__aarch64__) && defined(__linux__) && defined(HWCAP2_AFP)
+        afp = (getauxval(AT_HWCAP2) & HWCAP2_AFP) != 0;
+#endif
+    }
+    return afp;
+}
+
+/* Guest MXCSR FTZ (bit 15, flush denormal results) and DAZ (bit 6, denormal inputs read as zero)
+ * -> this host thread's FPCR, so the native float code the translator emits flushes denormals
+ * as the guest asked. FPCR.FZ (bit 24) flushes inputs and outputs together (FPCR.AH = 0):
+ *   - FTZ and DAZ: FZ, exact.
+ *   - DAZ only: with FEAT_AFP, FIZ (bit 0) flushes inputs alone, exact; without it, FZ (results
+ *     that underflow are flushed too, which x86 does not do).
+ *   - FTZ only (Bloodborne's Havok workers, inFAMOUS: MXCSR 0x9f80): FZ. A thread's own arithmetic
+ *     then never makes a denormal, as on x86; only denormals it loads are flushed too, where x86
+ *     would use them. Leaving FZ off would keep every denormal result instead (values decaying
+ *     towards zero never reach it). Exact FTZ needs FPCR.AH = 1, which also changes NaN results
+ *     and FMIN/FMAX for all the thread's float code (host code included): not done.
  * BBCPU_FTZ=0 leaves FPCR alone. */
 void bbcpu_apply_host_fp(uint32_t mxcsr) {
 #if defined(__aarch64__)
@@ -56,9 +86,13 @@ void bbcpu_apply_host_fp(uint32_t mxcsr) {
         enabled = !(env && env[0] == '0');
     }
     if (!enabled) return;
+    enum { FIZ = 1u << 0, FZ = 1u << 24 };
+    const int ftz = (mxcsr & 0x8000) != 0, daz = (mxcsr & 0x40) != 0;
     uint64_t fpcr, want;
     __asm__ volatile("mrs %0, fpcr" : "=r"(fpcr));
-    want = (mxcsr & 0x8040) ? (fpcr | (1ull << 24)) : (fpcr & ~(1ull << 24));
+    want = fpcr & ~(uint64_t)(FZ | (host_has_afp() ? FIZ : 0));
+    if (ftz || (daz && !host_has_afp())) want |= FZ;
+    if (daz && host_has_afp()) want |= FIZ;
     if (want != fpcr) __asm__ volatile("msr fpcr, %0" : : "r"(want));
 #else
     (void)mxcsr;

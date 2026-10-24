@@ -167,6 +167,40 @@ T uint64_t t_float(uint64_t a, uint64_t b, uint64_t c) {
     return r;
 }
 
+/* MXCSR FTZ/DAZ (a & 3: none, FTZ, DAZ, both), as bbcpu reproduces them on arm64
+ * (bbcpu_apply_host_fp): under FTZ a denormal result of normal inputs is flushed, under DAZ a
+ * denormal input reads as zero. Not checked: a denormal input under FTZ only and a denormal
+ * result under DAZ only (FPCR.FZ flushes both without FEAT_AFP; x86 flushes neither). */
+static inline unsigned getcsr(void) { unsigned v; __asm__ volatile("stmxcsr %0" : "=m"(v)); return v; }
+static inline void setcsr(unsigned v) { __asm__ volatile("ldmxcsr %0" : : "m"(v) : "memory"); }
+T uint64_t t_mxcsr(uint64_t a, uint64_t b, uint64_t c) {
+    const unsigned saved = getcsr(), mode = (unsigned)a & 3;
+    const int ftz = mode & 1, daz = (mode >> 1) & 1;
+    union { uint32_t u; float f; } den = {.u = 1u + ((uint32_t)b & 0x7ffffeu)},  /* denormal */
+        low = {.u = 0x00800000u | ((uint32_t)c & 0x7fffffu)};                    /* smallest exponent */
+    union { uint64_t u; double d; } dden = {.u = 1u + (b & 0xffffffffffffeull)},
+        dlow = {.u = 0x0010000000000000ull | (c & 0xfffffffffffffull)};
+    volatile float big = 1.2676506e30f, half = 0.5f; /* 2^100: a denormal input gives a normal result */
+    volatile double dbig = 1.2676506002282294e30, dhalf = 0.5;
+    setcsr((saved & ~0x8040u) | (ftz ? 0x8000u : 0) | (daz ? 0x40u : 0));
+    union { float f; uint32_t u; } r1 = {0}, r2 = {0};
+    union { double d; uint64_t u; } r3 = {0}, r4 = {0};
+    union { __m128 v; uint32_t u[4]; } r5 = {0};
+    if (daz || !ftz) { /* denormal inputs */
+        r1.f = den.f * big;
+        r3.d = dden.d * dbig;
+        r5.v = _mm_mul_ps(_mm_set_ps(den.f, 1.0f, den.f, 2.0f), _mm_set1_ps(big));
+    }
+    if (ftz || !daz) { /* denormal results */
+        r2.f = low.f * half;
+        r4.d = dlow.d * dhalf;
+    }
+    __asm__ volatile("" : : "m"(r1), "m"(r2), "m"(r3), "m"(r4), "m"(r5) : "memory");
+    setcsr(saved);
+    return ((uint64_t)r1.u << 32 | r2.u) ^ r3.u ^ (r4.u * 3) ^ ((uint64_t)r5.u[3] << 32 | r5.u[1]) ^
+           r5.u[0] ^ r5.u[2];
+}
+
 T uint64_t t_string(uint64_t a, uint64_t b, uint64_t c) {
     unsigned char buf[256], out[256];
     for (int k = 0; k < 256; ++k) buf[k] = (unsigned char)((a >> (k & 63)) ^ (uint64_t)k);
@@ -256,7 +290,7 @@ T uint64_t t_memops(uint64_t a, uint64_t b, uint64_t c) {
 typedef uint64_t (*Test)(uint64_t, uint64_t, uint64_t);
 const struct { const char *name; Test fn; } tests[] = {
     {"arith", t_arith}, {"compare", t_compare}, {"misc", t_misc}, {"control", t_control},
-    {"vector", t_vector}, {"float", t_float}, {"string", t_string}, {"memops", t_memops},
+    {"vector", t_vector}, {"float", t_float}, {"string", t_string}, {"memops", t_memops}, {"mxcsr", t_mxcsr},
 };
 
 static uint64_t rng = 0x123456789abcdef1ull;
