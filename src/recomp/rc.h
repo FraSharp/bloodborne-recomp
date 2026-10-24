@@ -227,6 +227,47 @@ static inline int rc_fcompare(double a, double b, int predicate) {
     return r;
 }
 
+/* roundss/roundps (the interpreter's round_mode): the mode from imm, or mxcsr with imm bit 2. */
+static inline double rc_round_mode(double x, int imm, uint32_t mxcsr) {
+    switch ((imm & 4) ? (int)((mxcsr >> 13) & 3) : imm & 3) {
+    case 0: return __builtin_nearbyint(x);
+    case 1: return __builtin_floor(x);
+    case 2: return __builtin_ceil(x);
+    default: return __builtin_trunc(x);
+    }
+}
+
+/* Saturations of the pack and saturating add/sub instructions (the interpreter's). */
+static inline int16_t rc_sat16(int32_t v) { return v > 32767 ? 32767 : v < -32768 ? -32768 : (int16_t)v; }
+static inline uint16_t rc_usat16(int32_t v) { return v > 65535 ? 65535 : v < 0 ? 0 : (uint16_t)v; }
+static inline int8_t rc_sat8(int32_t v) { return v > 127 ? 127 : v < -128 ? -128 : (int8_t)v; }
+static inline uint8_t rc_usat8(int32_t v) { return v > 255 ? 255 : v < 0 ? 0 : (uint8_t)v; }
+
+/* rdtsc: the guest's 1.6 GHz counter, as bbcpu_tsc computes it (interp.c). */
+#if defined(__aarch64__)
+static inline uint64_t rc_tsc(void) {
+    static uint64_t num, den;
+    if (!__atomic_load_n(&den, __ATOMIC_ACQUIRE)) {
+        uint64_t hz;
+        __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(hz));
+        uint64_t x = BBCPU_TSC_HZ, y = hz ? hz : 24000000;
+        while (y) { const uint64_t r = x % y; x = y; y = r; }
+        num = BBCPU_TSC_HZ / x;
+        __atomic_store_n(&den, (hz ? hz : 24000000) / x, __ATOMIC_RELEASE);
+    }
+    uint64_t counter;
+    __asm__ volatile("mrs %0, cntvct_el0" : "=r"(counter));
+    return counter * num / __atomic_load_n(&den, __ATOMIC_ACQUIRE);
+}
+#else
+#include <time.h>
+static inline uint64_t rc_tsc(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return ((uint64_t)t.tv_sec * 1000000000u + (uint64_t)t.tv_nsec) * 8 / 5;
+}
+#endif
+
 /* comiss/ucomiss flags (the interpreter's comis). */
 static inline uint64_t rc_comis(uint64_t f, double a, double b) {
     f &= ~(uint64_t)F_ARITH;
