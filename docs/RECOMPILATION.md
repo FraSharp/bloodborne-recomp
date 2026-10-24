@@ -60,7 +60,7 @@ The recompiled code is produced on the player's machine from their copy, and sta
 | Instructions in plain C (of those recompiled) | `████████████████████` 99.1% | 10,641,693 of 10,743,599 |
 | CPU time recompiled, against the translator | `████████████████████` 98% | 420% of one core against 428% |
 | Functions checked call by call (recordings) | `░░░░░░░░░░░░░░░░░░░░` 0.4% | 933 of 241,821 |
-| Functions labelled by library | `█████████░░░░░░░░░░░` 44.1% | 106,659 of 241,821 |
+| Functions labelled by library (2026-10-24) | `█████████████░░░░░░░` 62.7% | 151,562 of 241,821 |
 
 Every function is generated; the ones left to the translator are the 660 import stubs, the 130
 functions that call `setjmp`, and 58 that the game's patches (56) or the runtime's live switches
@@ -159,9 +159,9 @@ All write to `out/recomp/`.
 | Tool | What it does |
 |---|---|
 | `tools/recomp/scan.c` | Every function: the unwind tables (exact start and size), then what calls, jumps and code pointers reach (decoded by following control flow); `functions.tsv`, `calls.tsv`, `slots.tsv`, `strings.tsv` |
-| `tools/recomp/pointers.py` | The code addresses relocations put into data (`pointers.txt`), for `scan.c` |
+| `tools/recomp/pointers.py` | The code addresses relocations put into data (`pointers.txt`), for `scan.c`, and where each is stored (`pointer_slots.tsv`), for `label.py` |
 | `tools/recomp/imports.py` | The import stubs by name (`imports.tsv`) |
-| `tools/recomp/label.py` | The library of each function (`modules.tsv`), from source paths and messages, spread to neighbours |
+| `tools/recomp/label.py` | The library of each function (`modules.tsv`), from source paths and messages, spread to neighbours, vtables, callers and callees (`--check`: their agreement) |
 | `tools/recomp/profile.py` | CPU time per function and library from a macOS `sample` (`profile.tsv`) |
 | `tools/recomp/inspect.sh` | Ghidra's view of chosen functions (`c/<offset>.c`, `.s`), for analysis and annotations |
 | `BB_RECORD` (`src/cpu/record.c`) | Calls of chosen functions recorded in the game (`records/<offset>.rec`) |
@@ -226,22 +226,30 @@ job loop (`0x21b8710`) matches on 31 of 50; 18 of the others had other threads' 
 162,959 functions with unwind information (median 80 bytes), about 10 million instructions;
 241,821 functions in all with those found through calls, jumps and code pointers (about 11.3
 million instructions). No
-C++ RTTI. About 500 source paths in assertion and log messages name the libraries:
+C++ RTTI. About 500 source paths in assertion and log messages name the libraries
+(`tools/recomp/label.py`, 2026-10-24, all 241,821 functions):
 
 | Library | Functions | Code | Known by |
 |---|---:|---:|---|
-| Game (`SPRJ\Source\SPRJ\Source\Game`, `Sys`) | ~31,000 | 6.5 MiB | source paths |
-| Havok 2014.1 (physics, AI, cloth) | ~24,700 | 9.2 MiB | source paths, names |
-| Dantelion2 (FromSoftware's core library) | ~17,400 | 4.7 MiB | source paths |
-| Scaleform GFx (menus, HUD) | ~12,300 | 3.2 MiB | messages |
-| FD4 (FromSoftware's engine) | ~9,600 | 2.9 MiB | source paths, names |
-| FMOD Ex 4.44.50 | ~6,400 | 1.3 MiB | source paths |
-| Lua (LuaPlus) | ~2,200 | 0.9 MiB | source paths |
-| YEBIS (post-processing) | ~2,200 | 0.8 MiB | source paths |
-| Not labelled yet | ~56,300 | 10.4 MiB | |
+| Game (`SPRJ\Source\SPRJ\Source\Game`, `Sys`) | ~37,100 | 7.8 MiB | source paths |
+| Dantelion2 (FromSoftware's core library) | ~35,800 | 7.4 MiB | source paths |
+| Havok 2014.1 (physics, AI, cloth) | ~28,500 | 9.7 MiB | source paths, names |
+| Scaleform GFx (menus, HUD) | ~20,700 | 4.2 MiB | messages |
+| FD4 (FromSoftware's engine) | ~16,400 | 4.1 MiB | source paths, names |
+| FMOD Ex 4.44.50 | ~7,200 | 1.4 MiB | source paths |
+| Lua (LuaPlus) | ~3,000 | 1.0 MiB | source paths |
+| YEBIS (post-processing) | ~2,400 | 0.8 MiB | source paths |
+| zlib | 44 | 34 KiB | messages |
+| Other paths | 454 | 0.1 MiB | source paths of no library above |
+| Not labelled yet | ~90,300 | 7.1 MiB | |
 
-The labels are a first pass: a library's code is found by the paths in its own messages and the
-functions between them, so the boundaries between game, FD4 and Dantelion2 are approximate.
+The labels start from the paths and messages (5,742 functions) and spread from there: to the
+functions between two of the same library (109,686), then to the other entries of a vtable
+(25,116) and to functions whose callers or callees all belong to one library (11,018). Labelled
+functions hold 83.8% of the code. Hiding a tenth of the labels and running the last step again
+gives back 7,158 of 11,497, 96.4% of them the same: the steps agree with each other, but the
+boundaries between game, FD4 and Dantelion2 stay approximate. The functions left are small
+(median 18 bytes) and most have no direct caller (84,456).
 
 ## Where the CPU time goes
 

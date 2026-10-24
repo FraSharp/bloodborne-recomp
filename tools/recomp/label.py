@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""tools/recomp/label.py OUTDIR: which library each function of the game belongs to, from the tables of
-tools/recomp/scan.c (docs/RECOMPILATION.md).
+"""tools/recomp/label.py OUTDIR [--check]: which library each function of the game belongs to, from
+the tables of tools/recomp/scan.c and tools/recomp/pointers.py (docs/RECOMPILATION.md).
 
 1. Seeds: a function that references a source file path of its own (.cpp or .c: assertion and
    log messages) takes that file and its library. Header paths (.h, .inl) are inlined into the
@@ -8,10 +8,19 @@ tools/recomp/scan.c (docs/RECOMPILATION.md).
    Libraries without paths (Scaleform, zlib) are known by their messages (MESSAGES).
 2. Neighbours: the linker keeps each library's object files together, so an unlabelled run of
    functions between two functions of the same library takes that library.
+3. Vtables and calls, repeated until nothing changes: an unlabelled function takes the library of
+   the other functions of its vtable (consecutive pointer slots, pointer_slots.tsv) when they agree,
+   or the library of its callers, or of its callees, when all of them have one and it is the same.
+   Most functions left after 1 and 2 are small and have no direct caller.
+
+--check hides a tenth of the labelled functions, runs 3 again and prints how many of them it gives
+back and how many of those match: a measure of 3's agreement with 1 and 2, not of its truth.
 
 Writes OUTDIR/modules.tsv (address, size, module, source file, how it was labelled) and prints the
 functions and bytes per module."""
 import collections
+import os
+import random
 import re
 import sys
 
@@ -45,8 +54,47 @@ def module_of(path):
     return 'other'
 
 
+def propagate(label, how, tables, callers, callees):
+    """Rule 3 on label and how, in place: returns the number of functions it labelled."""
+    in_tables = collections.defaultdict(list)
+    for index, table in enumerate(tables):
+        for address in table:
+            in_tables[address].append(index)
+
+    def agreed(group):
+        """The one module of a group of functions, or None (any unlabelled, or several modules)."""
+        modules = {label.get(a, 'unknown') for a in group} - {'other'}
+        return modules.pop() if len(modules) == 1 and 'unknown' not in modules else None
+
+    total = 0
+    candidates = set(in_tables) | set(callers) | set(callees)
+    while True:
+        table_module = []
+        for table in tables:
+            modules = {label[a] for a in table if a in label} - {'other'}
+            table_module.append(modules.pop() if len(modules) == 1 else None)
+        found = {}
+        for address in candidates:
+            if address in label:
+                continue
+            votes = {table_module[i] for i in in_tables[address]} - {None}
+            by_table = bool(votes)
+            for group in (callers[address], callees[address]):
+                module = agreed(group) if group else None
+                if module:
+                    votes.add(module)
+            if len(votes) == 1:
+                found[address] = (votes.pop(), 'vtable' if by_table else 'calls')
+        if not found:
+            return total
+        for address, (module, kind) in found.items():
+            label[address], how[address] = module, kind
+        total += len(found)
+
+
 def main():
-    out = sys.argv[1] if len(sys.argv) > 1 else 'out/recomp'
+    args = [a for a in sys.argv[1:] if a != '--check']
+    out = args[0] if args else 'out/recomp'
     functions = []
     for line in open(f'{out}/functions.tsv'):
         if line.startswith('address'):
@@ -113,6 +161,44 @@ def main():
         modules = {module_of(p) for p in paths}
         if address not in label and len(modules) == 1:
             label[address], how[address] = modules.pop(), 'header'
+
+    # Vtables and calls (rule 3).
+    entries = {address for address, _ in functions}
+    tables = []
+    if os.path.exists(f'{out}/pointer_slots.tsv'):
+        previous = None
+        for line in open(f'{out}/pointer_slots.tsv'):
+            if line.startswith('slot'):
+                continue
+            slot, target = (int(field, 16) for field in line.split('\t'))
+            if target not in entries:
+                continue
+            if previous is not None and slot == previous + 8:
+                tables[-1].append(target)
+            else:
+                tables.append([target])
+            previous = slot
+    else:
+        print(f'no {out}/pointer_slots.tsv (tools/recomp/pointers.py writes it): vtables not used')
+    callers, callees = collections.defaultdict(set), collections.defaultdict(set)
+    for line in open(f'{out}/calls.tsv'):
+        if line.startswith('caller'):
+            continue
+        caller, callee = (int(field, 16) for field in line.split('\t'))
+        if caller in entries and callee in entries and caller != callee:
+            callers[callee].add(caller)
+            callees[caller].add(callee)
+    if '--check' in sys.argv:
+        random.seed(1)
+        known = sorted(a for a, m in label.items() if m != 'other')
+        hidden = set(random.sample(known, len(known) // 10))
+        test_label = {a: m for a, m in label.items() if a not in hidden}
+        propagate(test_label, {}, tables, callers, callees)
+        back = [a for a in hidden if a in test_label]
+        same = sum(test_label[a] == label[a] for a in back)
+        print(f'check: {len(hidden)} labels hidden, {len(back)} given back, {same} the same '
+              f'({100 * same / max(1, len(back)):.1f}%)')
+    propagate(label, how, tables, callers, callees)
 
     totals = collections.Counter()
     sizes = collections.Counter()
