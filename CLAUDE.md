@@ -66,14 +66,18 @@ C changed are compiled again.
 ## Where it stands and what is next
 
 - R2 done: all 241,031 functions generated (98.8% of instructions in C), 240,995 run in the game.
-  Same frame rate as the translator but **20–30% more CPU time** (5.2–5.5 cores against 4.3 in the
-  Hunter's Dream, `ps -o cputime=` over 30 s). R3 is making it cheaper. Candidates, measure each:
-  the copy of the 16 registers to and from `BbCpu` around every call; vector registers kept in
-  `BbCpu` instead of locals; acquire/release on every stack access; code layout of the 400 MB
-  library (hot functions together, cold code at -Os); the remaining calls into the translator
-  (wide-character libc functions; check the PS4's `wchar_t` size first). A `sample` of a run
-  with the full library comes out nearly empty (its symbols are too large): profile with the
-  49k-function library (`out/recomp/ran.txt`) instead.
+  Same frame rate as the translator but **about 14% more CPU time** (4.8 cores against 4.2 in the
+  Hunter's Dream, `ps -o cputime=` over 30 s, 2026-10-24; 5.3 before the lookup of recompiled
+  functions became one flat table). R3 is making it cheaper. In a profile the game's code costs
+  the same recompiled as translated; the extra is in the runtime: instructions left to the
+  interpreter (the FMOD mixer's vector code most) and `rc_call`. Candidates, measure each: those
+  instructions in C; the copy of the 16 registers to and from `BbCpu` around every call; vector
+  registers kept in `BbCpu` instead of locals; acquire/release on every stack access; the
+  remaining calls into the translator (wide-character libc functions; check the PS4's `wchar_t`
+  size first). Code layout showed no cost so far: with the flat table the full library takes
+  what a 47k-function one did before it. `sample` gets about 2 samples a thread from a library
+  with its debug map: profile a copy made with `strip -S` and `codesign -s - -f`, built from the
+  functions one scene runs (a translator run's `BB_JIT_MAP`, mapped to `functions.tsv`).
 - Data from earlier sessions, in `out/recomp/` of the user's clone (game-derived, never commit):
   `records40/` (40 recorded calls of each of the 933 busiest functions: 911 match, the rest also
   fail with the original), `hot.txt` (those 933), `ran.txt` (the 49,095 a 3-minute route ran),
