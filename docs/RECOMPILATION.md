@@ -247,3 +247,13 @@ Profiles in the Hunter's Dream (2026-10-10): the game's main thread is about 95%
 cutscene and spread thin in play (933 functions ran in 20 s; the busiest 145 take half of the
 time; the job loop is the largest at 7.3%). No small set of functions dominates, so the CPU side
 gets faster by recompiling all of them, which R2 did; R3 makes that code cheaper.
+
+CPU time (2026-10-24, M3 Pro, standing in the Hunter's Dream at about 730 draws a frame,
+`ps -o cputime=` over 30 s, three runs each): the translator alone takes 418–429% of one core,
+the full library 476–485%. Before the lookup of recompiled functions became one flat table it
+took 529–539%: its 16,384 chained buckets held about 15 functions each, and every indirect call
+walks them. In a `sample` of each, the game's code costs the same recompiled as translated (about
+3.1 cores); the difference is in the runtime: instructions the generated C leaves to the
+interpreter (the FMOD mixer thread's vector code most) and `rc_call`, the path of indirect calls
+and calls into the translator (a second: 11.3 million recompiled calls, 740,000 into the
+translator, 2.5 million straight to host imports).

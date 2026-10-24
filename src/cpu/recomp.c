@@ -13,26 +13,40 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-enum { BUCKETS = 16384 };
-typedef struct Recomp { uint64_t address; RcFn fn; struct Recomp *next; } Recomp;
-static Recomp *buckets[BUCKETS];
+/* The recompiled functions by address: open addressing with linear probing, at most half full
+ * (every indirect call looks one up; chained buckets of 241,000 functions cost a cache miss per
+ * link). Filled once by bbcpu_recomp_load before guest code runs; address 0 is an empty slot. */
+typedef struct { uint64_t address; RcFn fn; } Recomp;
+static Recomp *table;
+static uint64_t table_mask;
+static int table_shift;
 int bbcpu_recomp_count;
 uint64_t bbcpu_recomp_calls;
 
-static uint32_t bucket(uint64_t address) { return (uint32_t)((address * 0x9e3779b97f4a7c15ull) >> 50); }
+static uint64_t slot_of(uint64_t address) { return (address * 0x9e3779b97f4a7c15ull) >> table_shift; }
 
 RcFn bbcpu_recomp_at(uint64_t address) {
-    for (const Recomp *r = buckets[bucket(address)]; r; r = r->next)
-        if (r->address == address) return r->fn;
-    return NULL;
+    if (!table) return NULL;
+    for (uint64_t i = slot_of(address);; i = (i + 1) & table_mask) {
+        if (table[i].address == address) return table[i].fn;
+        if (!table[i].address) return NULL;
+    }
+}
+
+static void reserve(size_t count) {
+    int bits = 10;
+    while ((UINT64_C(1) << bits) < 2 * (uint64_t)count) ++bits;
+    table = calloc(UINT64_C(1) << bits, sizeof(*table));
+    if (!table) abort();
+    table_mask = (UINT64_C(1) << bits) - 1;
+    table_shift = 64 - bits;
 }
 
 static void add(uint64_t address, RcFn fn) {
-    Recomp *r = malloc(sizeof(*r));
-    if (!r) abort();
-    *r = (Recomp){address, fn, buckets[bucket(address)]};
-    buckets[bucket(address)] = r;
-    ++bbcpu_recomp_count;
+    uint64_t i = slot_of(address);
+    while (table[i].address && table[i].address != address) i = (i + 1) & table_mask;
+    if (!table[i].address) ++bbcpu_recomp_count;
+    table[i] = (Recomp){address, fn};
 }
 
 int bbcpu_is_tcb_load(const BbInsn *in) {
@@ -102,6 +116,15 @@ static _Thread_local uint32_t frame_depth, frame_capacity;
 
 /* Statistics for the report: calls into the translator, longjmps to an outer frame, deepest. */
 static uint64_t translated_runs, frame_jumps, deepest_frame, recomp_image_base, host_calls;
+/* Adds to a shared counter in batches of 4096 per thread, as bbcpu_recomp_counted does: every
+ * thread adding one at a time to the same line costs as much as a short call. */
+static void count_batched(uint64_t *total, uint32_t *pending) {
+    if (++*pending == 4096) {
+        __atomic_add_fetch(total, *pending, __ATOMIC_RELAXED);
+        *pending = 0;
+    }
+}
+static _Thread_local uint32_t pending_runs, pending_host_calls;
 /* BB_RECOMP_TARGETS=1: the targets of calls into the translator, counted (sampled 1 in 64). */
 enum { TARGET_SLOTS = 4096 };
 static struct { uint64_t rip, count; } targets[TARGET_SLOTS];
@@ -139,7 +162,7 @@ static void run_translated(BbCpu *cpu, uint64_t slot) {
         if (!frames) abort();
     }
     const volatile uint32_t depth = frame_depth++;
-    __atomic_add_fetch(&translated_runs, 1, __ATOMIC_RELAXED);
+    count_batched(&translated_runs, &pending_runs);
     note_target(cpu->rip);
     if (depth + 1 > __atomic_load_n(&deepest_frame, __ATOMIC_RELAXED)) __atomic_store_n(&deepest_frame, depth + 1, __ATOMIC_RELAXED);
     const uint64_t stop = FRAME_BASE + (uint64_t)depth * 16;
@@ -175,7 +198,7 @@ static int call_import(BbCpu *cpu, uint64_t target) {
     memcpy(&disp, code + 2, 4);
     const uint64_t host = bb_load(target + 6 + (uint64_t)(int64_t)disp, 8);
     if (!host || bbcpu_is_guest_code(host)) return 0;
-    __atomic_add_fetch(&host_calls, 1, __ATOMIC_RELAXED);
+    count_batched(&host_calls, &pending_host_calls);
     cpu->rip = host;
     bbcpu_call_host_at_rip(cpu); /* pops the return address into rip */
     return 1;
@@ -334,6 +357,7 @@ void bbcpu_recomp_load(uint64_t image_base) {
                   .call = rc_call, .tail = rc_tail, .bail = rc_bail};
     size_t count = 0;
     const RcFunction *functions = init(&api, &count);
+    reserve(count);
     /* BB_RECOMP_OFF: these not; BB_RECOMP_ONLY: only these (bisecting). */
     const OffsetSet off = offset_set("BB_RECOMP_OFF"), only = offset_set("BB_RECOMP_ONLY");
     size_t used = 0, changed = 0, kept = 0;
