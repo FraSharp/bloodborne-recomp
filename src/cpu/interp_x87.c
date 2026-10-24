@@ -301,6 +301,7 @@ int bbcpu_exec_x87(BbCpu *cpu, const BbInsn *in) {
         cpu->fsw = sw & ~0x3800;
         cpu->top = (sw >> 11) & 7;
         cpu->mxcsr = (uint32_t)bb_load(a + 24, 4);
+        bbcpu_apply_host_fp(cpu->mxcsr);
         for (int i = 0; i < 8; ++i) *st(cpu, i) = load80(a + 32 + i * 16);
         for (int i = 0; i < 16; ++i) memcpy(cpu->v[i].b, (const void *)(a + 160 + i * 16), 16);
         return 1;

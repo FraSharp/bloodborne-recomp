@@ -45,6 +45,26 @@ void bbcpu_set_thread_pointer(uintptr_t tcb) {
     if (tls_cpu) apply_thread_pointer(tls_cpu);
 }
 
+/* MXCSR FTZ (bit 15) or DAZ (bit 6) -> this host thread's FPCR.FZ (bit 24, flushes inputs and
+ * outputs), so the native float code the translator emits flushes denormals as the guest asked.
+ * BBCPU_FTZ=0 leaves FPCR alone. */
+void bbcpu_apply_host_fp(uint32_t mxcsr) {
+#if defined(__aarch64__)
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *env = getenv("BBCPU_FTZ");
+        enabled = !(env && env[0] == '0');
+    }
+    if (!enabled) return;
+    uint64_t fpcr, want;
+    __asm__ volatile("mrs %0, fpcr" : "=r"(fpcr));
+    want = (mxcsr & 0x8040) ? (fpcr | (1ull << 24)) : (fpcr & ~(1ull << 24));
+    if (want != fpcr) __asm__ volatile("msr fpcr, %0" : : "r"(want));
+#else
+    (void)mxcsr;
+#endif
+}
+
 /* MXCSR and FCW given to this thread before its BbCpu exists (bbcpu_set_fp_control). */
 static _Thread_local struct { int set; uint32_t mxcsr; uint16_t fcw; } tls_fp;
 void bbcpu_get_fp_control(uint32_t *mxcsr, uint16_t *fcw) {
@@ -55,6 +75,7 @@ void bbcpu_get_fp_control(uint32_t *mxcsr, uint16_t *fcw) {
 void bbcpu_set_fp_control(uint32_t mxcsr, uint16_t fcw) {
     tls_fp.set = 1; tls_fp.mxcsr = mxcsr; tls_fp.fcw = fcw;
     if (tls_cpu) { tls_cpu->mxcsr = mxcsr; tls_cpu->fcw = fcw; }
+    bbcpu_apply_host_fp(mxcsr);
 }
 
 static BbWatch *watch_threads;
@@ -130,6 +151,7 @@ static BbCpu *current_cpu(void) {
     BbCpu *cpu = calloc(1, sizeof(*cpu));
     if (!cpu) abort();
     cpu->mxcsr = tls_fp.set ? tls_fp.mxcsr : 0x1f80;
+    bbcpu_apply_host_fp(cpu->mxcsr);
     cpu->fcw = tls_fp.set ? tls_fp.fcw : 0x37f;
     cpu->flags = 2;
     apply_thread_pointer(cpu);

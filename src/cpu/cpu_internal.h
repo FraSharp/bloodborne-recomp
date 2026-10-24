@@ -214,4 +214,7 @@ _Static_assert(__builtin_offsetof(BbHostArgs, rax) == 448, "hostcall.S layout");
 _Static_assert(__builtin_offsetof(BbHostArgs, xmm0) == 464, "hostcall.S layout");
 _Static_assert(__builtin_offsetof(BbHostArgs, xmm1) == 496, "hostcall.S layout");
 
+/* Sets this host thread's FPCR.FZ from the guest MXCSR (cpu.c). */
+void bbcpu_apply_host_fp(uint32_t mxcsr);
+
 #endif

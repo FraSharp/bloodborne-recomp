@@ -1093,6 +1093,7 @@ int bbcpu_exec_vec(BbCpu *cpu, const BbInsn *in) {
     /* ---- state ---- */
     case M(LDMXCSR): case M(VLDMXCSR):
         cpu->mxcsr = (uint32_t)bb_load(bbcpu_addr(cpu, in, &in->op[0]), 4);
+        bbcpu_apply_host_fp(cpu->mxcsr);
         return 1;
     case M(STMXCSR): case M(VSTMXCSR):
         bb_store(bbcpu_addr(cpu, in, &in->op[0]), 4, cpu->mxcsr);
