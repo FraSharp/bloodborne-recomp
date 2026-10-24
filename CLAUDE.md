@@ -65,13 +65,13 @@ C changed are compiled again.
 
 ## Where it stands and what is next
 
-- R2 done: all 241,031 functions generated (98.8% of instructions in C), 240,995 run in the game.
-  Same frame rate as the translator but **about 14% more CPU time** (4.8 cores against 4.2 in the
-  Hunter's Dream, `ps -o cputime=` over 30 s, 2026-10-24; 5.3 before the lookup of recompiled
-  functions became one flat table). R3 is making it cheaper. In a profile the game's code costs
-  the same recompiled as translated; the extra is in the runtime: instructions left to the
-  interpreter (the FMOD mixer's vector code most) and `rc_call`. Candidates, measure each: those
-  instructions in C; the copy of the 16 registers to and from `BbCpu` around every call; vector
+- R2 done: all 241,031 functions generated (99.1% of instructions in C), 240,973 run in the game.
+  Same frame rate and **the same CPU time as the translator** (420% of one core against 428% in
+  the Hunter's Dream, `ps -o cputime=` over 30 s, 2026-10-24; 481% before the instructions left
+  to the interpreter got C, 534% before the lookup of recompiled functions became one flat
+  table). R3 is making it cheaper than the translator. In a profile the game's code costs the
+  same recompiled as translated; the runtime's share now is mostly `rc_call`. Candidates,
+  measure each: the copy of the 16 registers to and from `BbCpu` around every call; vector
   registers kept in `BbCpu` instead of locals; acquire/release on every stack access; the
   remaining calls into the translator (wide-character libc functions; check the PS4's `wchar_t`
   size first). Code layout showed no cost so far: with the flat table the full library takes
