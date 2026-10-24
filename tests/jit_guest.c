@@ -168,9 +168,11 @@ T uint64_t t_float(uint64_t a, uint64_t b, uint64_t c) {
 }
 
 /* MXCSR FTZ/DAZ (a & 3: none, FTZ, DAZ, both), as bbcpu reproduces them on arm64
- * (bbcpu_apply_host_fp): under FTZ a denormal result of normal inputs is flushed, under DAZ a
- * denormal input reads as zero. Not checked: a denormal input under FTZ only and a denormal
- * result under DAZ only (FPCR.FZ flushes both without FEAT_AFP; x86 flushes neither). */
+ * (bbcpu_apply_host_fp; tools/cpu/test_jit.sh runs with BBCPU_FTZ=1, so the FTZ-only and
+ * DAZ-only cases use the approximate mappings, which are off by default): under FTZ a denormal
+ * result of normal inputs is flushed, under DAZ a denormal input reads as zero. Not checked: a
+ * denormal input under FTZ only and a denormal result under DAZ only (FPCR.FZ flushes both;
+ * x86 flushes neither; with FEAT_AFP, DAZ only uses FIZ and is exact). */
 static inline unsigned getcsr(void) { unsigned v; __asm__ volatile("stmxcsr %0" : "=m"(v)); return v; }
 static inline void setcsr(unsigned v) { __asm__ volatile("ldmxcsr %0" : : "m"(v) : "memory"); }
 T uint64_t t_mxcsr(uint64_t a, uint64_t b, uint64_t c) {

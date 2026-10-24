@@ -68,31 +68,35 @@ static int host_has_afp(void) {
 
 /* Guest MXCSR FTZ (bit 15, flush denormal results) and DAZ (bit 6, denormal inputs read as zero)
  * -> this host thread's FPCR, so the native float code the translator emits flushes denormals
- * as the guest asked. FPCR.FZ (bit 24) flushes inputs and outputs together (FPCR.AH = 0):
- *   - FTZ and DAZ: FZ, exact.
- *   - DAZ only: with FEAT_AFP, FIZ (bit 0) flushes inputs alone, exact; without it, FZ (results
- *     that underflow are flushed too, which x86 does not do).
- *   - FTZ only (Bloodborne's Havok workers, inFAMOUS: MXCSR 0x9f80): FZ. A thread's own arithmetic
- *     then never makes a denormal, as on x86; only denormals it loads are flushed too, where x86
- *     would use them. Leaving FZ off would keep every denormal result instead (values decaying
- *     towards zero never reach it). Exact FTZ needs FPCR.AH = 1, which also changes NaN results
- *     and FMIN/FMAX for all the thread's float code (host code included): not done.
+ * as the guest asked. FPCR.FZ (bit 24) flushes inputs and outputs together (FPCR.AH = 0).
+ * Exact mappings, on by default:
+ *   - FTZ and DAZ: FZ.
+ *   - DAZ only, with FEAT_AFP (Apple M3 and later): FIZ (bit 0) flushes inputs alone.
+ * Approximate mappings, only with BBCPU_FTZ=1 (neither choice is exact, so by default the thread
+ * keeps the host's behaviour):
+ *   - FTZ only (Bloodborne's Havok workers, inFAMOUS: MXCSR 0x9f80): FZ. The thread's results are
+ *     flushed as on x86, and denormals it loads are flushed too, where x86 would use them.
+ *     Without it, its denormal results are kept, which x86 flushes.
+ *   - DAZ only, without FEAT_AFP (M1/M2): FZ; results that underflow are flushed too.
+ * Exact FTZ needs FPCR.AH = 1, which also changes NaN results and FMIN/FMAX for the thread's
+ * host code: a follow-up, switching FPCR at the guest/host boundaries. The MXCSR rounding
+ * mode (RC) is not mapped either.
  * BBCPU_FTZ=0 leaves FPCR alone. */
 void bbcpu_apply_host_fp(uint32_t mxcsr) {
 #if defined(__aarch64__)
-    static int enabled = -1;
-    if (enabled < 0) {
+    static int mode = -1; /* 0: off, 1: exact mappings (default), 2: approximate ones too */
+    if (mode < 0) {
         const char *env = getenv("BBCPU_FTZ");
-        enabled = !(env && env[0] == '0');
+        mode = env && env[0] == '0' ? 0 : env && env[0] == '1' ? 2 : 1;
     }
-    if (!enabled) return;
+    if (!mode) return;
     enum { FIZ = 1u << 0, FZ = 1u << 24 };
     const int ftz = (mxcsr & 0x8000) != 0, daz = (mxcsr & 0x40) != 0;
     uint64_t fpcr, want;
     __asm__ volatile("mrs %0, fpcr" : "=r"(fpcr));
     want = fpcr & ~(uint64_t)(FZ | (host_has_afp() ? FIZ : 0));
-    if (ftz || (daz && !host_has_afp())) want |= FZ;
-    if (daz && host_has_afp()) want |= FIZ;
+    if ((ftz && daz) || (mode == 2 && (ftz || (daz && !host_has_afp())))) want |= FZ;
+    else if (daz && host_has_afp()) want |= FIZ;
     if (want != fpcr) __asm__ volatile("msr fpcr, %0" : : "r"(want));
 #else
     (void)mxcsr;
