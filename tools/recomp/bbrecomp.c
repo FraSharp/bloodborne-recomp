@@ -118,6 +118,7 @@ static void close_output(void) {
 #define RELOAD "memcpy(r, c->r, sizeof(r));"
 #define COND "rc_cond(%d, fk, fa, fb, fr, fz, fcf, c->flags)"
 #define FLAGS_OUT "c->flags = rc_flags(fk, fa, fb, fr, fz, fcf, c->flags); fk = FK_CPU;"
+#define FLAGS_NOW "rc_flags(fk, fa, fb, fr, fz, fcf, c->flags)"
 
 typedef struct { char s[1024]; } Str;
 static Str str(const char *format, ...) __attribute__((format(printf, 1, 2)));
@@ -247,7 +248,16 @@ static void jump(Range f, uint64_t t) {
     else emit("{ " SPILL " " FLAGS_OUT " c->rip = B + 0x%" PRIx64 "ull; if (r[RSP] == entry_rsp) rc->tail(c); else rc->bail(c, entry_rsp); return; }", t);
 }
 
+/* The instruction in the interpreter: state spilled, flags in cpu->flags; an unexpected next rip
+ * dispatches. Also the slow path of translations (division faults). */
+static void emit_interp(uint64_t off, const BbInsn *in) {
+    emit("/* %s */ { " SPILL " " FLAGS_OUT " c->rip = B + 0x%" PRIx64 "ull; const uint64_t n = rc->step(c); " RELOAD
+         " if (n != B + 0x%" PRIx64 "ull) { dn = n; goto L_dispatch; } }",
+         ZydisMnemonicGetString((ZydisMnemonic)in->mnemonic), off, off + in->length);
+}
+
 static int translate_vector(uint64_t off, const BbInsn *in);
+static int translate_bits(uint64_t off, const BbInsn *in);
 static int translate_shift_mul(uint64_t off, const BbInsn *in);
 static int translate_extra(uint64_t off, const BbInsn *in);
 static int translate_atomic(uint64_t off, const BbInsn *in);
@@ -418,7 +428,7 @@ static int translate(Range f, uint64_t off, const BbInsn *in, uint64_t *stats) {
         return 1;
     }
     default:
-        return translate_shift_mul(off, in) || translate_extra(off, in) || translate_vector(off, in);
+        return translate_shift_mul(off, in) || translate_extra(off, in) || translate_bits(off, in) || translate_vector(off, in);
     }
 }
 
@@ -599,7 +609,8 @@ static int translate_vector(uint64_t off, const BbInsn *in) {
         return vbinary(off, in, w / 16, w, 1, body.s);
     }
     case M(PSHUFD): case M(VPSHUFD): case M(VPERMILPS): {
-        if (m == M(VPERMILPS) && in->op[2].type != OP_IMM) return 0;
+        if (m == M(VPERMILPS) && in->op[2].type != OP_IMM) /* the variable form */
+            return vbinary(off, in, w / 16, w, 1, "for (int k = 0; k < 4; ++k) rr.d[i * 4 + k] = a.d[i * 4 + (b.d[i * 4 + k] & 3)];");
         const VOps o = vops1(in);
         if (!o.imm || !vread(off, in, o.s2, &a) || !vwrite(off, in, o.dst, "rr", w, &s)) return 0;
         const int imm = (int)o.imm->disp;
@@ -608,12 +619,14 @@ static int translate_vector(uint64_t off, const BbInsn *in) {
              a.s, w / 16, imm & 3, (imm >> 2) & 3, (imm >> 4) & 3, (imm >> 6) & 3, s.s);
         return 1;
     }
-    case M(MOVMSKPS): case M(VMOVMSKPS): {
+    case M(MOVMSKPS): case M(VMOVMSKPS): case M(MOVMSKPD): case M(VMOVMSKPD): case M(PMOVMSKB): case M(VPMOVMSKB): {
         if (!vread(off, in, &in->op[1], &a)) return 0;
         Str wr;
         if (!write_op(off, in, &in->op[0], "mask", &wr)) return 0;
-        emit("{ const BbVec a = %s; uint64_t mask = 0; for (int i = 0; i < %d; ++i) mask |= (uint64_t)(a.d[i] >> 31) << i; %s }\n",
-             a.s, w / 4, wr.s);
+        const char *bit = (m == M(MOVMSKPS) || m == M(VMOVMSKPS)) ? "(uint64_t)(a.d[i] >> 31)"
+                        : (m == M(MOVMSKPD) || m == M(VMOVMSKPD)) ? "(a.q[i] >> 63)" : "(uint64_t)(a.b[i] >> 7)";
+        const int lanes = (m == M(MOVMSKPS) || m == M(VMOVMSKPS)) ? w / 4 : (m == M(MOVMSKPD) || m == M(VMOVMSKPD)) ? w / 8 : w;
+        emit("{ const BbVec a = %s; uint64_t mask = 0; for (int i = 0; i < %d; ++i) mask |= %s << i; %s }\n", a.s, lanes, bit, wr.s);
         return 1;
     }
     case M(MOVHLPS): case M(VMOVHLPS): case M(MOVLHPS): case M(VMOVLHPS): {
@@ -816,8 +829,186 @@ static int translate_vector(uint64_t off, const BbInsn *in) {
                              (int)o.imm->disp & 0xff, (int)o.imm->disp & 0xff);
         return vbinary(off, in, w / 16, w, 1, body.s);
     }
-    default:
+    case M(PSHUFB): case M(VPSHUFB):
+        return vbinary(off, in, w, w, 1, "rr.b[i] = (b.b[i] & 0x80) ? 0 : a.b[(i & ~15) + (b.b[i] & 15)];");
+    case M(PUNPCKLBW): case M(VPUNPCKLBW): case M(PUNPCKHBW): case M(VPUNPCKHBW): case M(PUNPCKLWD): case M(VPUNPCKLWD):
+    case M(PUNPCKHWD): case M(VPUNPCKHWD): case M(PUNPCKLDQ): case M(VPUNPCKLDQ): case M(PUNPCKHDQ): case M(VPUNPCKHDQ):
+    case M(PUNPCKLQDQ): case M(VPUNPCKLQDQ): case M(PUNPCKHQDQ): case M(VPUNPCKHQDQ): {
+        const char *name = ZydisMnemonicGetString((ZydisMnemonic)m);
+        const char *kind = strstr(name, "unpck") + 5; /* lbw, hwd, ldq, hqdq... */
+        const int high = kind[0] == 'h';
+        const int es = !strcmp(kind + 1, "bw") ? 1 : !strcmp(kind + 1, "wd") ? 2 : !strcmp(kind + 1, "dq") ? 4 : 8;
+        const Str body = str("for (int k = 0; k < %d; ++k) { memcpy(rr.b + i * 16 + k * %d, a.b + i * 16 + %d + k * %d, %d); "
+                             "memcpy(rr.b + i * 16 + k * %d + %d, b.b + i * 16 + %d + k * %d, %d); }",
+                             8 / es, 2 * es, high ? 8 : 0, es, es, 2 * es, es, high ? 8 : 0, es, es);
+        return vbinary(off, in, w / 16, w, 1, body.s);
+    }
+    case M(PACKSSDW): case M(VPACKSSDW): case M(PACKUSDW): case M(VPACKUSDW):
+    case M(PACKSSWB): case M(VPACKSSWB): case M(PACKUSWB): case M(VPACKUSWB): {
+        const int dw = m == M(PACKSSDW) || m == M(VPACKSSDW) || m == M(PACKUSDW) || m == M(VPACKUSDW);
+        const int us = m == M(PACKUSDW) || m == M(VPACKUSDW) || m == M(PACKUSWB) || m == M(VPACKUSWB);
+        const Str body = dw ? str("for (int k = 0; k < 4; ++k) { rr.%s[i * 8 + k] = %s(a.sd[i * 4 + k]); rr.%s[i * 8 + 4 + k] = %s(b.sd[i * 4 + k]); }",
+                                  us ? "w" : "sw", us ? "rc_usat16" : "rc_sat16", us ? "w" : "sw", us ? "rc_usat16" : "rc_sat16")
+                            : str("for (int k = 0; k < 8; ++k) { rr.%s[i * 16 + k] = %s(a.sw[i * 8 + k]); rr.%s[i * 16 + 8 + k] = %s(b.sw[i * 8 + k]); }",
+                                  us ? "b" : "sb", us ? "rc_usat8" : "rc_sat8", us ? "b" : "sb", us ? "rc_usat8" : "rc_sat8");
+        return vbinary(off, in, w / 16, w, 1, body.s);
+    }
+    case M(MOVLPS): case M(VMOVLPS): case M(MOVLPD): case M(VMOVLPD): case M(MOVHPS): case M(VMOVHPS): case M(MOVHPD): case M(VMOVHPD): {
+        const int high = m == M(MOVHPS) || m == M(VMOVHPS) || m == M(MOVHPD) || m == M(VMOVHPD);
+        const BbOp *d = &in->op[0], *last = &in->op[in->count - 1];
+        Str ad;
+        int stack;
+        if (d->type == OP_MEM) {
+            if (!vread(off, in, &in->op[1], &a) || !address(off, in, d, &ad, &stack)) return 0;
+            emit("{ const BbVec x = %s; rc_st(%s, 8, x.q[%d]); }\n", a.s, ad.s, high);
+            return 1;
+        }
+        if (!vreg(d) || last->type != OP_MEM || !vread(off, in, in->count == 3 ? &in->op[1] : d, &a) ||
+            !address(off, in, last, &ad, &stack) || !vwrite(off, in, d, "rr", 16, &s)) return 0;
+        emit("{ BbVec rr = %s; rr.q[%d] = rc_ld(%s, 8); %s }\n", a.s, high, ad.s, s.s);
+        return 1;
+    }
+    case M(VINSERTF128): case M(VINSERTI128):
+        if (in->count < 4 || in->op[3].type != OP_IMM || !vread(off, in, &in->op[1], &a) || !vread(off, in, &in->op[2], &b) ||
+            !vwrite(off, in, &in->op[0], "rr", 32, &s)) return 0;
+        emit("{ BbVec rr = %s; const BbVec x = %s; memcpy(rr.b + %d, x.b, 16); %s }\n", a.s, b.s, (in->op[3].disp & 1) ? 16 : 0, s.s);
+        return 1;
+    case M(VEXTRACTF128): case M(VEXTRACTI128):
+        if (in->count < 3 || in->op[2].type != OP_IMM || !vread(off, in, &in->op[1], &a) || !vwrite(off, in, &in->op[0], "rr", 16, &s)) return 0;
+        emit("{ const BbVec x = %s; BbVec rr; memset(&rr, 0, sizeof(rr)); memcpy(rr.b, x.b + %d, 16); %s }\n", a.s,
+             (in->op[2].disp & 1) ? 16 : 0, s.s);
+        return 1;
+    case M(VPERM2F128): case M(VPERM2I128): {
+        if (in->count < 4 || in->op[3].type != OP_IMM || !vread(off, in, &in->op[1], &a) || !vread(off, in, &in->op[2], &b) ||
+            !vwrite(off, in, &in->op[0], "rr", 32, &s)) return 0;
+        const int imm = (int)in->op[3].disp;
+        emit("{ const BbVec a = %s, b = %s; BbVec rr;", a.s, b.s);
+        for (int h = 0; h < 2; ++h) {
+            const int sel = (imm >> (h * 4)) & 0xf;
+            if (sel & 8) emit(" memset(rr.b + %d, 0, 16);", h * 16);
+            else emit(" memcpy(rr.b + %d, %s.b + %d, 16);", h * 16, (sel & 2) ? "b" : "a", (sel & 1) ? 16 : 0);
+        }
+        emit(" %s }\n", s.s);
+        return 1;
+    }
+    case M(PTEST): case M(VPTEST): case M(VTESTPS): {
+        if (!vread(off, in, &in->op[0], &a) || !vread(off, in, &in->op[1], &b)) return 0;
+        const uint64_t lane = m == M(VTESTPS) ? UINT64_C(0x8000000080000000) : ~UINT64_C(0);
+        emit("{ const BbVec a = %s, b = %s; uint64_t and_ = 0, andn = 0; for (int i = 0; i < %d; ++i) { and_ |= a.q[i] & b.q[i] & 0x%" PRIx64 "ull; "
+             "andn |= ~a.q[i] & b.q[i] & 0x%" PRIx64 "ull; } c->flags = (" FLAGS_NOW " & ~(uint64_t)F_ARITH) | (and_ ? 0 : F_ZF) | (andn ? 0 : F_CF); "
+             "fk = FK_CPU; }\n", a.s, b.s, w / 8, lane, lane);
+        return 1;
+    }
+    case M(CVTSS2SD): case M(VCVTSS2SD): case M(CVTSD2SS): case M(VCVTSD2SS): {
+        const VOps o = vops3(in);
+        if (o.imm || !vread(off, in, o.s1, &a) || !vread(off, in, o.s2, &b) || !vwrite(off, in, o.dst, "rr", 16, &s)) return 0;
+        emit("{ BbVec rr = %s; const BbVec x = %s; %s %s }\n", a.s, b.s,
+             (m == M(CVTSS2SD) || m == M(VCVTSS2SD)) ? "rr.fd[0] = x.f[0];" : "rr.f[0] = (float)x.fd[0];", s.s);
+        return 1;
+    }
+    case M(ROUNDSS): case M(VROUNDSS): case M(ROUNDSD): case M(VROUNDSD): {
+        const VOps o = vops3(in);
+        if (!o.imm || !vread(off, in, o.s1, &a) || !vread(off, in, o.s2, &b) || !vwrite(off, in, o.dst, "rr", 16, &s)) return 0;
+        const int imm = (int)o.imm->disp;
+        emit("{ BbVec rr = %s; const BbVec x = %s; %s %s }\n", a.s, b.s, (m == M(ROUNDSD) || m == M(VROUNDSD))
+             ? str("rr.fd[0] = rc_round_mode(x.fd[0], %d, c->mxcsr);", imm).s : str("rr.f[0] = (float)rc_round_mode(x.f[0], %d, c->mxcsr);", imm).s, s.s);
+        return 1;
+    }
+    case M(ROUNDPS): case M(VROUNDPS): case M(ROUNDPD): case M(VROUNDPD): {
+        const VOps o = vops1(in);
+        if (!o.imm || !vread(off, in, o.s2, &a) || !vwrite(off, in, o.dst, "rr", w, &s)) return 0;
+        const int imm = (int)o.imm->disp, dbl = m == M(ROUNDPD) || m == M(VROUNDPD);
+        emit("{ const BbVec x = %s; BbVec rr; memset(&rr, 0, sizeof(rr)); for (int i = 0; i < %d; ++i) %s %s }\n", a.s, dbl ? w / 8 : w / 4,
+             dbl ? str("rr.fd[i] = rc_round_mode(x.fd[i], %d, c->mxcsr);", imm).s : str("rr.f[i] = (float)rc_round_mode(x.f[i], %d, c->mxcsr);", imm).s, s.s);
+        return 1;
+    }
+    case M(PMOVZXBW): case M(VPMOVZXBW): case M(PMOVZXBD): case M(VPMOVZXBD): case M(PMOVZXWD): case M(VPMOVZXWD):
+    case M(PMOVZXDQ): case M(VPMOVZXDQ): case M(PMOVSXBW): case M(VPMOVSXBW): case M(PMOVSXWD): case M(VPMOVSXWD):
+    case M(PMOVSXDQ): case M(VPMOVSXDQ): case M(PMOVSXBD): case M(VPMOVSXBD): {
+        if (!vread(off, in, &in->op[1], &a) || !vwrite(off, in, &in->op[0], "rr", w, &s)) return 0;
+        const char *body;
+        int lanes;
+        switch (m) {
+        case M(PMOVZXBW): case M(VPMOVZXBW): body = "rr.w[i] = x.b[i];"; lanes = w / 2; break;
+        case M(PMOVZXBD): case M(VPMOVZXBD): body = "rr.d[i] = x.b[i];"; lanes = w / 4; break;
+        case M(PMOVZXWD): case M(VPMOVZXWD): body = "rr.d[i] = x.w[i];"; lanes = w / 4; break;
+        case M(PMOVZXDQ): case M(VPMOVZXDQ): body = "rr.q[i] = x.d[i];"; lanes = w / 8; break;
+        case M(PMOVSXBW): case M(VPMOVSXBW): body = "rr.sw[i] = x.sb[i];"; lanes = w / 2; break;
+        case M(PMOVSXWD): case M(VPMOVSXWD): body = "rr.sd[i] = x.sw[i];"; lanes = w / 4; break;
+        case M(PMOVSXDQ): case M(VPMOVSXDQ): body = "rr.sq[i] = x.sd[i];"; lanes = w / 8; break;
+        default: body = "rr.sd[i] = x.sb[i];"; lanes = w / 4; break;
+        }
+        emit("{ const BbVec x = %s; BbVec rr; memset(&rr, 0, sizeof(rr)); for (int i = 0; i < %d; ++i) %s %s }\n", a.s, lanes, body, s.s);
+        return 1;
+    }
+    case M(SHUFPD): case M(VSHUFPD): {
+        const VOps o = vops3(in);
+        if (!o.imm) return 0;
+        const int imm = (int)o.imm->disp;
+        const Str body = str("rr.q[i * 2] = a.q[i * 2 + ((%d >> (i * 2)) & 1)]; rr.q[i * 2 + 1] = b.q[i * 2 + ((%d >> (i * 2 + 1)) & 1)];", imm, imm);
+        return vbinary(off, in, w / 16, w, 1, body.s);
+    }
+    case M(VPERMILPD): case M(PSHUFLW): case M(VPSHUFLW): case M(PSHUFHW): case M(VPSHUFHW): {
+        if (m == M(VPERMILPD) && in->op[2].type != OP_IMM) /* the variable form */
+            return vbinary(off, in, w / 16, w, 1, "for (int k = 0; k < 2; ++k) rr.q[i * 2 + k] = a.q[i * 2 + ((b.q[i * 2 + k] >> 1) & 1)];");
+        const VOps o = vops1(in);
+        if (!o.imm || !vread(off, in, o.s2, &a) || !vwrite(off, in, o.dst, "rr", w, &s)) return 0;
+        const int imm = (int)o.imm->disp;
+        const Str body = m == M(VPERMILPD) ? str("for (int k = 0; k < 2; ++k) rr.q[h * 2 + k] = a.q[h * 2 + ((%d >> (h * 2 + k)) & 1)];", imm)
+                       : (m == M(PSHUFLW) || m == M(VPSHUFLW)) ? str("for (int k = 0; k < 4; ++k) rr.w[h * 8 + k] = a.w[h * 8 + ((%d >> (k * 2)) & 3)];", imm)
+                       : str("for (int k = 0; k < 4; ++k) rr.w[h * 8 + 4 + k] = a.w[h * 8 + 4 + ((%d >> (k * 2)) & 3)];", imm);
+        emit("{ const BbVec a = %s; BbVec rr = a; for (int h = 0; h < %d; ++h) { %s } %s }\n", a.s, w / 16, body.s, s.s);
+        return 1;
+    }
+    default: {
+        /* Integer lanes (the interpreter's ibinary): rr.field[i] = (type)(expr). */
+        static const struct { int m, vm, es; const char *field, *type, *expr; } lanes[] = {
+            {M(PADDB), M(VPADDB), 1, "b", "uint8_t", "a.b[i] + b.b[i]"},
+            {M(PADDW), M(VPADDW), 2, "w", "uint16_t", "a.w[i] + b.w[i]"},
+            {M(PSUBB), M(VPSUBB), 1, "b", "uint8_t", "a.b[i] - b.b[i]"},
+            {M(PSUBW), M(VPSUBW), 2, "w", "uint16_t", "a.w[i] - b.w[i]"},
+            {M(PADDSW), M(VPADDSW), 2, "sw", "int16_t", "rc_sat16(a.sw[i] + b.sw[i])"},
+            {M(PADDUSW), M(VPADDUSW), 2, "w", "uint16_t", "rc_usat16(a.w[i] + b.w[i])"},
+            {M(PSUBSW), M(VPSUBSW), 2, "sw", "int16_t", "rc_sat16(a.sw[i] - b.sw[i])"},
+            {M(PSUBUSW), M(VPSUBUSW), 2, "w", "uint16_t", "rc_usat16(a.w[i] - b.w[i])"},
+            {M(PADDSB), M(VPADDSB), 1, "sb", "int8_t", "rc_sat8(a.sb[i] + b.sb[i])"},
+            {M(PADDUSB), M(VPADDUSB), 1, "b", "uint8_t", "rc_usat8(a.b[i] + b.b[i])"},
+            {M(PSUBSB), M(VPSUBSB), 1, "sb", "int8_t", "rc_sat8(a.sb[i] - b.sb[i])"},
+            {M(PSUBUSB), M(VPSUBUSB), 1, "b", "uint8_t", "rc_usat8(a.b[i] - b.b[i])"},
+            {M(PMULLW), M(VPMULLW), 2, "w", "uint16_t", "a.sw[i] * b.sw[i]"},
+            {M(PMULHW), M(VPMULHW), 2, "w", "uint16_t", "(a.sw[i] * b.sw[i]) >> 16"},
+            {M(PMULHUW), M(VPMULHUW), 2, "w", "uint16_t", "((uint32_t)a.w[i] * b.w[i]) >> 16"},
+            {M(PMULLD), M(VPMULLD), 4, "d", "uint32_t", "(uint32_t)((int64_t)a.sd[i] * b.sd[i])"},
+            {M(PMULUDQ), M(VPMULUDQ), 8, "q", "uint64_t", "(uint64_t)a.d[i * 2] * b.d[i * 2]"},
+            {M(PMULDQ), M(VPMULDQ), 8, "q", "uint64_t", "(uint64_t)((int64_t)a.sd[i * 2] * b.sd[i * 2])"},
+            {M(PAVGB), M(VPAVGB), 1, "b", "uint8_t", "(a.b[i] + b.b[i] + 1) >> 1"},
+            {M(PAVGW), M(VPAVGW), 2, "w", "uint16_t", "(a.w[i] + b.w[i] + 1) >> 1"},
+            {M(PMINSD), M(VPMINSD), 4, "sd", "int32_t", "a.sd[i] < b.sd[i] ? a.sd[i] : b.sd[i]"},
+            {M(PMAXSD), M(VPMAXSD), 4, "sd", "int32_t", "a.sd[i] > b.sd[i] ? a.sd[i] : b.sd[i]"},
+            {M(PMINUD), M(VPMINUD), 4, "d", "uint32_t", "a.d[i] < b.d[i] ? a.d[i] : b.d[i]"},
+            {M(PMAXUD), M(VPMAXUD), 4, "d", "uint32_t", "a.d[i] > b.d[i] ? a.d[i] : b.d[i]"},
+            {M(PMINSW), M(VPMINSW), 2, "sw", "int16_t", "a.sw[i] < b.sw[i] ? a.sw[i] : b.sw[i]"},
+            {M(PMAXSW), M(VPMAXSW), 2, "sw", "int16_t", "a.sw[i] > b.sw[i] ? a.sw[i] : b.sw[i]"},
+            {M(PMINUW), M(VPMINUW), 2, "w", "uint16_t", "a.w[i] < b.w[i] ? a.w[i] : b.w[i]"},
+            {M(PMAXUW), M(VPMAXUW), 2, "w", "uint16_t", "a.w[i] > b.w[i] ? a.w[i] : b.w[i]"},
+            {M(PMINUB), M(VPMINUB), 1, "b", "uint8_t", "a.b[i] < b.b[i] ? a.b[i] : b.b[i]"},
+            {M(PMAXUB), M(VPMAXUB), 1, "b", "uint8_t", "a.b[i] > b.b[i] ? a.b[i] : b.b[i]"},
+            {M(PMINSB), M(VPMINSB), 1, "sb", "int8_t", "a.sb[i] < b.sb[i] ? a.sb[i] : b.sb[i]"},
+            {M(PMAXSB), M(VPMAXSB), 1, "sb", "int8_t", "a.sb[i] > b.sb[i] ? a.sb[i] : b.sb[i]"},
+            {M(PCMPEQW), M(VPCMPEQW), 2, "w", "uint16_t", "a.w[i] == b.w[i] ? 0xffff : 0"},
+            {M(PCMPGTB), M(VPCMPGTB), 1, "b", "uint8_t", "a.sb[i] > b.sb[i] ? 0xff : 0"},
+            {M(PCMPGTW), M(VPCMPGTW), 2, "w", "uint16_t", "a.sw[i] > b.sw[i] ? 0xffff : 0"},
+            {M(PCMPGTD), M(VPCMPGTD), 4, "d", "uint32_t", "a.sd[i] > b.sd[i] ? ~0u : 0"},
+            {M(PCMPGTQ), M(VPCMPGTQ), 8, "q", "uint64_t", "a.sq[i] > b.sq[i] ? ~0ull : 0"},
+            {M(PABSD), M(VPABSD), 4, "d", "uint32_t", "b.sd[i] < 0 ? -(uint32_t)b.sd[i] : (uint32_t)b.sd[i]"},
+            {M(PABSW), M(VPABSW), 2, "w", "uint16_t", "b.sw[i] < 0 ? -b.sw[i] : b.sw[i]"},
+            {M(PABSB), M(VPABSB), 1, "b", "uint8_t", "b.sb[i] < 0 ? -b.sb[i] : b.sb[i]"},
+        };
+        for (size_t k = 0; k < sizeof(lanes) / sizeof(lanes[0]); ++k)
+            if (lanes[k].m == m || lanes[k].vm == m)
+                return vbinary(off, in, w / lanes[k].es, w, 1, str("rr.%s[i] = (%s)(%s);", lanes[k].field, lanes[k].type, lanes[k].expr).s);
         return 0;
+    }
     }
 }
 
@@ -1035,6 +1226,165 @@ static int translate_shift_mul(uint64_t off, const BbInsn *in) {
     return 0;
 }
 
+/* A read-modify-write destination: `a` its value (zero-extended), `put` the statement storing v. */
+static int rmw_dest(uint64_t off, const BbInsn *in, const BbOp *d, Str *load, Str *put) {
+    Str ad, w;
+    int stack = 0;
+    if (d->type == OP_MEM) {
+        if (!address(off, in, d, &ad, &stack)) return 0;
+        *load = str("const uint64_t ea = %s; const uint64_t a = %s(ea, %d);", ad.s, stack ? "rc_lds" : "rc_ld", d->size);
+        *put = str("%s(ea, %d, v);", stack ? "rc_sts" : "rc_st", d->size);
+        return 1;
+    }
+    if (!gpr(d) || !read_op(off, in, d, d->size, &ad) || !write_op(off, in, d, "v", &w)) return 0;
+    *load = str("const uint64_t a = %s;", ad.s);
+    *put = w;
+    return 1;
+}
+
+/* Bit scans and counts, BMI1, mul/imul/div/idiv of rdx:rax, rotates, bswap/movbe, xchg, rdtsc (as
+ * src/cpu/interp.c does them: flags it leaves alone stay as they were). */
+static int translate_bits(uint64_t off, const BbInsn *in) {
+    const int m = in->mnemonic;
+    const BbOp *d = &in->op[0], *src = &in->op[1];
+    const int size = d->size, bits = size * 8;
+    static const char *const sext[9] = {0, "int8_t", "int16_t", 0, "int32_t", 0, 0, 0, "int64_t"};
+    Str a, b, w, load, put;
+    switch (m) {
+    case M(BSF): case M(BSR): case M(TZCNT): case M(LZCNT): case M(POPCNT): {
+        if (!gpr(d) || (size != 2 && size != 4 && size != 8) || !read_op(off, in, src, size, &a) || !write_op(off, in, d, "v", &w))
+            return 0;
+        emit("{ const uint64_t a = %s; const uint64_t f = " FLAGS_NOW "; ", a.s);
+        if (m == M(BSF) || m == M(BSR))
+            emit("if (!a) c->flags = f | F_ZF; else { const uint64_t v = %s; c->flags = f & ~(uint64_t)F_ZF; %s } ",
+                 m == M(BSF) ? "(uint64_t)__builtin_ctzll(a)" : "(uint64_t)(63 - __builtin_clzll(a))", w.s);
+        else if (m == M(POPCNT))
+            emit("const uint64_t v = (uint64_t)__builtin_popcountll(a); c->flags = (f & ~(uint64_t)F_ARITH) | (a ? 0 : F_ZF); %s ", w.s);
+        else
+            emit("const uint64_t v = !a ? %d : %s; c->flags = (f & ~(uint64_t)(F_CF | F_ZF)) | (!a ? F_CF : 0) | (!v ? F_ZF : 0); %s ",
+                 bits, m == M(TZCNT) ? "(uint64_t)__builtin_ctzll(a)" : str("(uint64_t)(__builtin_clzll(a) - %d)", 64 - bits).s, w.s);
+        emit("fk = FK_CPU; }\n");
+        return 1;
+    }
+    case M(ANDN): case M(BEXTR): case M(BLSR): case M(BLSI): case M(BLSMSK): {
+        if (!gpr(d) || (size != 4 && size != 8) || !read_op(off, in, src, size, &a) || !write_op(off, in, d, "v", &w)) return 0;
+        if ((m == M(ANDN) || m == M(BEXTR)) && (in->count < 3 || !read_op(off, in, &in->op[2], size, &b))) return 0;
+        const uint64_t mk = mask(size);
+        emit("{ uint64_t f = " FLAGS_NOW " & ~(uint64_t)F_ARITH; const uint64_t s = %s; ", a.s);
+        if (m == M(ANDN)) emit("const uint64_t v = ~s & (%s) & 0x%" PRIx64 "ull; ", b.s, mk);
+        else if (m == M(BEXTR))
+            emit("const uint64_t ctl = %s; const unsigned start = ctl & 0xff, len = (ctl >> 8) & 0xff; uint64_t v = start >= %d ? 0 : s >> start; "
+                 "if (len < 64) v &= (1ull << len) - 1; v &= 0x%" PRIx64 "ull; ", b.s, bits, mk);
+        else if (m == M(BLSR)) emit("const uint64_t v = s & (s - 1) & 0x%" PRIx64 "ull; if (!s) f |= F_CF; ", mk);
+        else if (m == M(BLSI)) emit("const uint64_t v = s & (0 - s) & 0x%" PRIx64 "ull; if (s) f |= F_CF; ", mk);
+        else emit("const uint64_t v = (s ^ (s - 1)) & 0x%" PRIx64 "ull; if (!s) f |= F_CF; ", mk);
+        emit("if (!v) f |= F_ZF; if (v & 0x%" PRIx64 "ull) f |= F_SF; c->flags = f; fk = FK_CPU; %s }\n", mk ^ (mk >> 1), w.s);
+        return 1;
+    }
+    case M(MUL): case M(IMUL): { /* one operand: rdx:rax = rax * it (two and three: translate_shift_mul) */
+        if (in->count != 1 || !sext[size] || !read_op(off, in, d, size, &a)) return 0;
+        const uint64_t mk = mask(size);
+        emit("{ const uint64_t s = %s; const uint64_t a = r[RAX] & 0x%" PRIx64 "ull; uint64_t lo, hi; int ov; ", a.s, mk);
+        if (m == M(MUL) && size == 8)
+            emit("const unsigned __int128 full = (unsigned __int128)a * s; lo = (uint64_t)full; hi = (uint64_t)(full >> 64); ov = hi != 0; ");
+        else if (m == M(MUL))
+            emit("const uint64_t full = a * s; lo = full & 0x%" PRIx64 "ull; hi = (full >> %d) & 0x%" PRIx64 "ull; ov = hi != 0; ", mk, bits, mk);
+        else if (size == 8)
+            emit("const __int128 full = (__int128)(int64_t)a * (int64_t)s; lo = (uint64_t)full; hi = (uint64_t)((unsigned __int128)full >> 64); "
+                 "ov = (__int128)(int64_t)lo != full; ");
+        else
+            emit("const int64_t full = (int64_t)(%s)a * (int64_t)(%s)s; lo = (uint64_t)full & 0x%" PRIx64 "ull; "
+                 "hi = ((uint64_t)full >> %d) & 0x%" PRIx64 "ull; ov = (int64_t)(%s)lo != full; ", sext[size], sext[size], mk, bits, mk, sext[size]);
+        if (size == 1) emit("r[RAX] = (r[RAX] & ~0xffffull) | lo | (hi << 8); ");
+        else if (size == 2) emit("r[RAX] = (r[RAX] & ~0xffffull) | lo; r[RDX] = (r[RDX] & ~0xffffull) | hi; ");
+        else emit("r[RAX] = lo; r[RDX] = hi; ");
+        emit("c->flags = (" FLAGS_NOW " & ~(uint64_t)(F_CF | F_OF)) | (ov ? F_CF | F_OF : 0); fk = FK_CPU; }\n");
+        return 1;
+    }
+    case M(DIV): case M(IDIV): { /* 32 and 64 bits; a zero divisor or a quotient too wide: the interpreter */
+        if ((size != 4 && size != 8) || !read_op(off, in, d, size, &a)) return 0;
+        if (m == M(DIV) && size == 4)
+            emit("{ const uint64_t s = %s; const uint64_t n = ((r[RDX] & 0xffffffffull) << 32) | (r[RAX] & 0xffffffffull); "
+                 "const int ok = s && (n >> 32) < s; uint64_t q = 0, rem = 0; if (ok) { q = n / s; rem = n %% s; } ", a.s);
+        else if (m == M(DIV))
+            emit("{ const uint64_t s = %s, hi = r[RDX], lo = r[RAX]; const int ok = s && hi < s; uint64_t q = 0, rem = 0; "
+                 "if (ok && !hi) { q = lo / s; rem = lo %% s; } else if (ok) { const unsigned __int128 n = ((unsigned __int128)hi << 64) | lo; "
+                 "q = (uint64_t)(n / s); rem = (uint64_t)(n %% s); } ", a.s);
+        else if (size == 4)
+            emit("{ const int64_t s = (int32_t)(%s); const int64_t n = (int64_t)(((r[RDX] & 0xffffffffull) << 32) | (r[RAX] & 0xffffffffull)); "
+                 "int ok = s && !(s == -1 && n == INT64_MIN); int64_t q = 0, rem = 0; if (ok) { q = n / s; rem = n %% s; ok = q == (int32_t)q; } ", a.s);
+        else
+            emit("{ const int64_t s = (int64_t)(%s); const uint64_t hi = r[RDX], lo = r[RAX]; int ok = s != 0; int64_t q = 0, rem = 0; "
+                 "if (ok && hi == (uint64_t)((int64_t)lo >> 63)) { if (s == -1 && lo == 0x8000000000000000ull) ok = 0; "
+                 "else { q = (int64_t)lo / s; rem = (int64_t)lo %% s; } } else if (ok && s != -1) { "
+                 "const __int128 n = (__int128)(((unsigned __int128)hi << 64) | lo), qq = n / s; ok = qq == (int64_t)qq; "
+                 "q = (int64_t)qq; rem = (int64_t)(n %% s); } else ok = 0; ", a.s);
+        emit("if (ok) { r[RAX] = %s; r[RDX] = %s; } else ", size == 4 ? "(uint32_t)q" : "(uint64_t)q", size == 4 ? "(uint32_t)rem" : "(uint64_t)rem");
+        emit_interp(off, in);
+        emit(" }\n");
+        return 1;
+    }
+    case M(ROL): case M(ROR): {
+        if (!sext[size] || !rmw_dest(off, in, d, &load, &put)) return 0;
+        const unsigned cmask = size == 8 ? 63 : 31;
+        Str n;
+        if (in->count < 2) n = str("1u");
+        else if (src->type == OP_IMM) {
+            if (!((unsigned)src->disp & cmask)) { emit("/* rotate by 0 */\n"); return 1; }
+            n = str("%uu", (unsigned)src->disp & cmask);
+        } else if (gpr(src) && src->reg == RCX && src->size == 1) n = str("((unsigned)r[RCX] & %u)", cmask);
+        else return 0;
+        const uint64_t mk = mask(size), sign = mk ^ (mk >> 1);
+        emit("{ const unsigned n = %s; if (n) { %s const unsigned k = n %% %d; ", n.s, load.s, bits);
+        if (m == M(ROL))
+            emit("const uint64_t v = k ? ((a << k) | (a >> (%d - k))) & 0x%" PRIx64 "ull : a; const int cf = (int)(v & 1); "
+                 "c->flags = (" FLAGS_NOW " & ~(uint64_t)(F_CF | F_OF)) | (cf ? F_CF : 0) | ((((v & 0x%" PRIx64 "ull) != 0) != cf) ? F_OF : 0); ",
+                 bits, mk, sign);
+        else
+            emit("const uint64_t v = k ? ((a >> k) | (a << (%d - k))) & 0x%" PRIx64 "ull : a; const int msb = (v & 0x%" PRIx64 "ull) != 0, "
+                 "msb2 = (v & 0x%" PRIx64 "ull) != 0; c->flags = (" FLAGS_NOW " & ~(uint64_t)(F_CF | F_OF)) | (msb ? F_CF : 0) | (msb != msb2 ? F_OF : 0); ",
+                 bits, mk, sign, sign >> 1);
+        emit("fk = FK_CPU; %s } }\n", put.s);
+        return 1;
+    }
+    case M(BSWAP):
+        if (!gpr(d) || (size != 4 && size != 8)) return 0;
+        emit("r[%d] = %s;\n", d->reg, size == 8 ? str("__builtin_bswap64(r[%d])", d->reg).s : str("__builtin_bswap32((uint32_t)r[%d])", d->reg).s);
+        return 1;
+    case M(MOVBE): {
+        if (size != 2 && size != 4 && size != 8) return 0;
+        static const char *const swap[9] = {0, 0, "__builtin_bswap16((uint16_t)", 0, "__builtin_bswap32((uint32_t)", 0, 0, 0, "__builtin_bswap64((uint64_t)"};
+        if (!read_op(off, in, src, size, &a) || !write_op(off, in, d, str("%s(%s))", swap[size], a.s).s, &w)) return 0;
+        emit("%s\n", w.s);
+        return 1;
+    }
+    case M(XCHG): {
+        if (in->count != 2) return 0;
+        if (gpr(d) && gpr(src)) {
+            Str wa, wb;
+            if (!read_op(off, in, d, size, &a) || !read_op(off, in, src, size, &b) || !write_op(off, in, d, "vb", &wa) ||
+                !write_op(off, in, src, "va", &wb)) return 0;
+            emit("{ const uint64_t va = %s, vb = %s; %s %s }\n", a.s, b.s, wa.s, wb.s);
+            return 1;
+        }
+        const BbOp *mem = d->type == OP_MEM ? d : src, *reg = d->type == OP_MEM ? src : d;
+        Str ad;
+        int stack;
+        static const char *const type[9] = {0, "uint8_t", "uint16_t", 0, "uint32_t", 0, 0, 0, "uint64_t"};
+        if (mem->type != OP_MEM || !gpr(reg) || !type[mem->size] || !address(off, in, mem, &ad, &stack) ||
+            !read_op(off, in, reg, reg->size, &b) || !write_op(off, in, reg, "old", &w)) return 0;
+        emit("{ const uint64_t old = __atomic_exchange_n((%s *)(%s), (%s)(%s), __ATOMIC_SEQ_CST); %s }\n", type[mem->size], ad.s,
+             type[mem->size], b.s, w.s);
+        return 1;
+    }
+    case M(RDTSC):
+        emit("{ const uint64_t t = rc_tsc(); r[RAX] = (uint32_t)t; r[RDX] = t >> 32; }\n");
+        return 1;
+    default:
+        return 0;
+    }
+}
+
 /* The instructions of [start, start + size) the code reaches from the entry: fall-through, direct
  * jumps and branches inside the function (data between them, such as jump tables, is never decoded;
  * a place only an indirect jump reaches goes back to the translator). Sorted by offset. */
@@ -1182,10 +1532,8 @@ static void generate(Function fn, uint64_t *stats) {
             continue;
         }
         fseek(out, mark, SEEK_SET); /* what a translation wrote before it gave up */
-        /* The interpreter: state spilled, flags in cpu->flags; an unexpected next rip dispatches. */
-        emit("/* %s */ { " SPILL " " FLAGS_OUT " c->rip = B + 0x%" PRIx64 "ull; const uint64_t n = rc->step(c); " RELOAD
-             " if (n != B + 0x%" PRIx64 "ull) { dn = n; goto L_dispatch; } }\n",
-             ZydisMnemonicGetString((ZydisMnemonic)x->in.mnemonic), x->off, x->off + x->in.length);
+        emit_interp(x->off, &x->in);
+        emit("\n");
     }
     if (snippet_mode) emit("    " SPILL " " FLAGS_OUT " c->rip = B + 0x%" PRIx64 "ull; return;\n", f.end);
     emit("    dn = B + 0x%" PRIx64 "ull; /* past the end */\n", f.end);

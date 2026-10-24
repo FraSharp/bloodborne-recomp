@@ -51,22 +51,22 @@ The recompiled code is produced on the player's machine from their copy, and sta
 
 ## Progress
 
-*2026-10-10.* The game's executable has 241,821 functions, about 11.3 million instructions.
+*2026-10-24.* The game's executable has 241,821 functions, about 11.3 million instructions.
 
 | | Progress | |
 |---|---|---|
-| Functions recompiled, running in the game | `████████████████████` 99.7% | 240,995 of 241,821 |
-| Instructions recompiled | `███████████████████░` 93.0% | 10,484,493 of 11,268,132 |
-| Instructions in plain C (of those recompiled) | `████████████████████` 98.8% | 10,353,766 of 10,484,493 |
-| Speed recompiled, against the translator | `██████████████████░░` 92% | 55.2 FPS against ~60 |
+| Functions recompiled, running in the game | `████████████████████` 99.6% | 240,973 of 241,821 |
+| Instructions recompiled | `███████████████████░` 95.3% | 10,743,599 of 11,268,132 |
+| Instructions in plain C (of those recompiled) | `████████████████████` 99.1% | 10,641,693 of 10,743,599 |
+| CPU time recompiled, against the translator | `████████████████████` 98% | 420% of one core against 428% |
 | Functions checked call by call (recordings) | `░░░░░░░░░░░░░░░░░░░░` 0.4% | 933 of 241,821 |
 | Functions labelled by library | `█████████░░░░░░░░░░░` 44.1% | 106,659 of 241,821 |
 
 Every function is generated; the ones left to the translator are the 660 import stubs, the 130
-functions that call `setjmp`, and 36 the game's patches changed. Instructions recompiled count
-what control flow reaches; the rest is padding and code nothing reaches. Every recompiled function
-can run in the game; the call-by-call checks cover the busiest, and the fuzzing covers every
-instruction form the generator handles.
+functions that call `setjmp`, and 58 that the game's patches (56) or the runtime's live switches
+(2) change. Instructions recompiled count what control flow reaches; the rest is padding and code
+nothing reaches. Every recompiled function can run in the game; the call-by-call checks cover the
+busiest, and the fuzzing covers every instruction form the generator handles.
 
 ## The recompiler
 
@@ -82,10 +82,12 @@ again only the files whose C changed:
   reads). Vector registers stay in the CPU state, so vector instructions need no spill.
 - Memory accesses keep x86's ordering between threads (acquire/release), as the translator's do,
   the stack's too: the game's jobs write into their creator's stack.
-- In C: moves, integer arithmetic and logic (with carry), shifts, multiplies, bit tests,
-  conditional sets and moves, locked operations (compare-and-exchange loops), and the common
-  SSE/AVX moves, arithmetic, dot products, blends, inserts and extracts, conversions, bitwise
-  operations, compares, shifts and shuffles, each as the interpreter does it. Anything else runs in the interpreter, one instruction at a
+- In C: moves, integer arithmetic and logic (with carry), shifts and rotates, multiplies and
+  divisions, bit tests, scans and counts, BMI1, byte swaps, `rdtsc`, conditional sets and moves,
+  exchanges, locked operations (compare-and-exchange loops), and the common SSE/AVX moves,
+  arithmetic, dot products, blends, inserts and extracts, conversions, bitwise operations,
+  compares, shifts, shuffles, packs, unpacks and rounding, each as the interpreter does
+  it. A division that faults runs in the interpreter, as does anything else, one instruction at a
   time, so the output is complete from the start.
 - An indirect jump to an unknown place goes back to the translator; a jump out of the function is
   a tail call.
@@ -249,11 +251,16 @@ time; the job loop is the largest at 7.3%). No small set of functions dominates,
 gets faster by recompiling all of them, which R2 did; R3 makes that code cheaper.
 
 CPU time (2026-10-24, M3 Pro, standing in the Hunter's Dream at about 730 draws a frame,
-`ps -o cputime=` over 30 s, three runs each): the translator alone takes 418–429% of one core,
-the full library 476–485%. Before the lookup of recompiled functions became one flat table it
-took 529–539%: its 16,384 chained buckets held about 15 functions each, and every indirect call
-walks them. In a `sample` of each, the game's code costs the same recompiled as translated (about
-3.1 cores); the difference is in the runtime: instructions the generated C leaves to the
-interpreter (the FMOD mixer thread's vector code most) and `rc_call`, the path of indirect calls
-and calls into the translator (a second: 11.3 million recompiled calls, 740,000 into the
-translator, 2.5 million straight to host imports).
+`ps -o cputime=` over 30 s): the translator alone takes 418–429% of one core, the full library
+411–426% (three runs, mean 420%), the same within the runs' spread. Two changes got it there. The
+lookup of recompiled functions became one flat table (529–539% before, 469–485% after): its 16,384
+chained buckets held about 15 functions each, and every indirect call walked them. Then the
+instructions the generated C still left to the interpreter got C of their own: a counter in the
+runtime's single-step path found 11.8 million of them a second in this scene, 98% of them about
+20 mnemonics (`vpshufb`, `tzcnt`, `idiv`, `mul`, `vmovlps`, `vextractf128`, `lzcnt`, `bextr`,
+`rdtsc`, `andn`, `rol`, the `vpunpck` family, `blsr`, `div`, `vcvtsd2ss`, `vptest`, `vroundss`),
+on the FMOD mixer, the render thread and an unnamed thread most. In C they leave about 36,000 a
+second (string moves and `mfence`). In a `sample`, the game's code costs the same recompiled as
+translated (about 3.1 cores); what is left in the runtime is `rc_call`, the path of indirect calls
+and calls into the translator (a second: 4.3 million calls reach recompiled functions through the
+runtime, 990,000 go into the translator, 1.75 million straight to host imports).
