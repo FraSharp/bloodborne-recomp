@@ -17,6 +17,8 @@ if [[ ! -f $D/lib/libZydis.a ]]; then
     mkdir -p "$work"
     [[ -d $work/zydis ]] || git clone -q --recursive --depth 1 -b "$ZYDIS_VERSION" https://github.com/zyantific/zydis.git "$work/zydis"
     common=(-G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$prefix" -DBUILD_SHARED_LIBS=OFF)
+    # Zydis and Zycore ask for CMake < 3.10, which CMake 4 deprecates; 3.10 policies keep them building.
+    common+=(-DCMAKE_POLICY_VERSION_MINIMUM=3.10)
     # Zydis builds its bundled Zycore without install rules: Zycore first, then Zydis on it.
     cmake -S "$work/zydis/dependencies/zycore" -B "$work/zycore-build" "${common[@]}" >/dev/null
     cmake --build "$work/zycore-build" >/dev/null && cmake --install "$work/zycore-build" >/dev/null
