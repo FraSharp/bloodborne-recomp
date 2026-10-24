@@ -107,6 +107,10 @@ C changed are compiled again.
 - **Testing the game:** `tools/test_run.sh` (a copy of the save; the real one is never written),
   in English, one game at a time (`pgrep -x bb-probe` first). Test windows open on the user's
   screen: say so before long batches, and stop when asked.
+- **Every test run says what it tests, on screen:** `TEST_TITLE="..." TEST_DETAIL="..."
+  tools/test_run.sh NAME ...` puts a banner at the top of the game's window (the title defaults to
+  NAME). The title names the test and the build (e.g. "M2 skeleton: new build"); the detail
+  says the settings and what is being checked. Never start a test window without them.
 - **Never capture the user's screen.** Pictures come from the game: `tools/grab.sh`.
 - **Shell:** no `rm -rf` on variable paths; no `xargs ... sh -c '...'`.
 - **Docs:** plain, precise English; numbers measured, not guessed. Docs say what is true now;
