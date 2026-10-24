@@ -1,5 +1,7 @@
 # bloodborne-recomp
 
+[![Discord](https://img.shields.io/badge/Discord-join%20the%20server-5865F2?logo=discord&logoColor=white)](https://discord.gg/EyyQ23sTBg)
+
 A static recompiler for Bloodborne (PS4, CUSA03173 1.09): it reads **your own** copy of the game's
 executable and writes its functions out as C, which a compiler turns into a native library. No
 game code is in this repository, and none is ever published: only the tool.
@@ -15,8 +17,6 @@ functions against the original. Nothing here depends on an operating system: pro
 | [bloodborne-runtime](https://github.com/bloodborne-native/bloodborne-runtime) | Loads the game: the PS4 libraries, the renderer; loads the recompiled library |
 | [bloodborne-launcher](https://github.com/bloodborne-native/bloodborne-launcher) | The independent launcher, packaged in the macOS app |
 | [bloodborne-mac](https://github.com/bloodborne-native/bloodborne-mac) | Packages the macOS app, built on runtime and recomp |
-
-**Community:** the project's [Discord](https://discord.gg/EyyQ23sTBg) (`#bloodborne-recomp` for this repository).
 
 ## Status
 
