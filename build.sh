@@ -15,7 +15,7 @@ if [[ ! -f $D/lib/libZydis.a ]]; then
     prefix=$(mkdir -p "$D" && cd "$D" && pwd)
     work=$prefix/build
     mkdir -p "$work"
-    [[ -d $work/zydis ]] || git clone -q --recursive --depth 1 -b "$ZYDIS_VERSION" https://github.com/zyantific/zydis.git "$work/zydis"
+    [[ -d $work/zydis ]] || git -c advice.detachedHead=false clone -q --recursive --depth 1 -b "$ZYDIS_VERSION" https://github.com/zyantific/zydis.git "$work/zydis"
     common=(-G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$prefix" -DBUILD_SHARED_LIBS=OFF)
     # Zydis builds its bundled Zycore without install rules: Zycore first, then Zydis on it.
     cmake -S "$work/zydis/dependencies/zycore" -B "$work/zycore-build" "${common[@]}" >/dev/null
