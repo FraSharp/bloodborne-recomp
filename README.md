@@ -16,6 +16,8 @@ functions against the original. Nothing here depends on an operating system: pro
 | [bloodborne-launcher](https://github.com/bloodborne-native/bloodborne-launcher) | The independent launcher, packaged in the macOS app |
 | [bloodborne-mac](https://github.com/bloodborne-native/bloodborne-mac) | Packages the macOS app, built on runtime and recomp |
 
+**Community:** the project's [Discord](https://discord.gg/EyyQ23sTBg) (`#bloodborne-recomp` for this repository).
+
 ## Status
 
 The game's executable has 241,821 functions. Every one the library can hold is generated
