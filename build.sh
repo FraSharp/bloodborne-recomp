@@ -10,6 +10,16 @@ CC=${CC:-clang}
 arch=()
 [[ $(uname -s) == Darwin ]] && arch=(-arch "$(uname -m)")
 
+# cmake and ninja are only needed for Zydis; check before cloning it, not halfway through.
+missing=
+for tool in "$CC" $([[ -f $D/lib/libZydis.a ]] || echo cmake ninja); do
+    command -v "$tool" >/dev/null || missing+=" $tool"
+done
+if [[ -n $missing ]]; then
+    echo "build.sh: missing$missing (macOS: brew install cmake ninja; clang: xcode-select --install)" >&2
+    exit 1
+fi
+
 if [[ ! -f $D/lib/libZydis.a ]]; then
     echo "== zydis $ZYDIS_VERSION into $D"
     prefix=$(mkdir -p "$D" && cd "$D" && pwd)

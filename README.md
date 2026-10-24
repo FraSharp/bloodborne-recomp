@@ -28,7 +28,8 @@ All docs: [docs/README.md](docs/README.md).
 
 ## Build and use
 
-Needs clang, cmake, ninja and Python 3. Zydis (the x86 decoder) is built into `deps/` the first time.
+Needs clang, cmake, ninja and Python 3 (on macOS: `xcode-select --install` and
+`brew install cmake ninja`). Zydis (the x86 decoder) is built into `deps/` the first time.
 
 ```sh
 ./build.sh
