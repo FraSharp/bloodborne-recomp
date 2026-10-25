@@ -568,6 +568,13 @@ static int translate_vector(uint64_t off, const BbInsn *in) {
         return vbinary(off, in, 4, w, 0, "rr.q[i] = a.q[i] | b.q[i];");
     case M(XORPS): case M(VXORPS): case M(XORPD): case M(VXORPD): case M(PXOR): case M(VPXOR):
         return vbinary(off, in, 4, w, 0, "rr.q[i] = a.q[i] ^ b.q[i];");
+    case M(MOVSHDUP): case M(VMOVSHDUP): case M(MOVSLDUP): case M(VMOVSLDUP): {
+        if (!vread(off, in, &in->op[1], &a) || !vwrite(off, in, &in->op[0], "rr", w, &s)) return 0;
+        const int odd = m == M(MOVSHDUP) || m == M(VMOVSHDUP);
+        emit("{ const BbVec a = %s; BbVec rr = a; for (int i = 0; i < %d; ++i) rr.d[i] = a.d[(i & ~1) + %d]; %s }\n",
+             a.s, w / 4, odd, s.s);
+        return 1;
+    }
     case M(PADDD): case M(VPADDD): return vbinary(off, in, w / 4, w, 1, "rr.d[i] = a.d[i] + b.d[i];");
     case M(PSUBD): case M(VPSUBD): return vbinary(off, in, w / 4, w, 1, "rr.d[i] = a.d[i] - b.d[i];");
     case M(PADDQ): case M(VPADDQ): return vbinary(off, in, w / 8, w, 1, "rr.q[i] = a.q[i] + b.q[i];");
