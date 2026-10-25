@@ -584,6 +584,13 @@ static int translate_vector(uint64_t off, const BbInsn *in) {
         return vbinary(off, in, 4, w, 0, "rr.q[i] = a.q[i] | b.q[i];");
     case M(XORPS): case M(VXORPS): case M(XORPD): case M(VXORPD): case M(PXOR): case M(VPXOR):
         return vbinary(off, in, 4, w, 0, "rr.q[i] = a.q[i] ^ b.q[i];");
+    case M(MOVSHDUP): case M(VMOVSHDUP): case M(MOVSLDUP): case M(VMOVSLDUP): {
+        if (!vread(off, in, &in->op[1], &a) || !vwrite(off, in, &in->op[0], "rr", w, &s)) return 0;
+        const int odd = m == M(MOVSHDUP) || m == M(VMOVSHDUP);
+        emit("{ const BbVec a = %s; BbVec rr = a; for (int i = 0; i < %d; ++i) rr.d[i] = a.d[(i & ~1) + %d]; %s }\n",
+             a.s, w / 4, odd, s.s);
+        return 1;
+    }
     case M(PADDD): case M(VPADDD): return vbinary(off, in, w / 4, w, 1, "rr.d[i] = a.d[i] + b.d[i];");
     case M(PSUBD): case M(VPSUBD): return vbinary(off, in, w / 4, w, 1, "rr.d[i] = a.d[i] - b.d[i];");
     case M(PADDQ): case M(VPADDQ): return vbinary(off, in, w / 8, w, 1, "rr.q[i] = a.q[i] + b.q[i];");
@@ -1411,6 +1418,10 @@ static int insn_order(const void *a, const void *b) {
 }
 /* Targets of the jump tables decode found (labels too), for the function being generated. */
 static uint64_t *table_targets;
+/* The function has a jmp through a register that is not a jump table decode recognized (a
+ * computed jump, such as into an unrolled loop): every decoded instruction gets a label, so its
+ * targets inside the function dispatch there instead of going back to the translator. */
+static int computed_jump;
 static size_t table_target_count, table_target_capacity;
 
 /* A compiler's jump table ending at list[n - 1] (jmp reg): lea T, [rip + table]; movsxd C,
@@ -1437,6 +1448,36 @@ static int jump_table(Function fn, const Insn *list, size_t n, uint64_t *work, s
             x->in.op[1].type == OP_IMM && k + 1 < n && list[k + 1].in.mnemonic == M(JNBE))
             entries = (uint64_t)x->in.op[1].disp + 1;
     }
+    /* Also: cmp R, N, then flag-free moves (the index copied from R: mov I, R), then ja
+     * (clang interleaves the stores of the case's common code). */
+    for (size_t k = n - 3; !entries && k-- > 0 && k + 16 > n;) {
+        if (list[k].in.mnemonic != M(JNBE)) continue;
+        int from = -1; /* the register the bound applies to */
+        for (size_t j = k; j-- > 0 && j + 8 > k;) {
+            const BbInsn *x = &list[j].in;
+            if (x->mnemonic == M(CMP)) {
+                if (x->op[0].type == OP_REG && x->op[1].type == OP_IMM) from = x->op[0].reg, entries = (uint64_t)x->op[1].disp + 1;
+                break;
+            }
+            if (x->mnemonic != M(MOV) && x->mnemonic != M(LEA) && x->mnemonic != M(MOVZX) && x->mnemonic != M(MOVSXD)) break;
+        }
+        if (!entries) break;
+        /* The index is R, or a copy of R made after the cmp (before the table load). */
+        int ok = from == index;
+        for (size_t j = k + 1; !ok && j < n - 3; ++j) {
+            const BbInsn *x = &list[j].in;
+            if (x->mnemonic == M(MOV) && x->op[0].type == OP_REG && x->op[0].reg == index && x->op[1].type == OP_REG &&
+                x->op[1].reg == from) ok = 1;
+        }
+        for (size_t j = k; !ok && j-- > 0 && j + 8 > k;) {
+            const BbInsn *x = &list[j].in;
+            if (x->mnemonic == M(CMP)) break;
+            if (x->mnemonic == M(MOV) && x->op[0].type == OP_REG && x->op[0].reg == index && x->op[1].type == OP_REG &&
+                x->op[1].reg == from) ok = 1;
+        }
+        if (!ok) entries = 0;
+        break;
+    }
     if (!table || !entries || entries > 4096) return 0;
     for (uint64_t e = 0; e < entries; ++e) {
         int32_t rel;
@@ -1461,6 +1502,7 @@ static Insn *decode(Function fn, size_t *count) {
     uint64_t *work = malloc(work_capacity * sizeof(*work));
     size_t pending = 0;
     table_target_count = 0;
+    computed_jump = 0;
     work[pending++] = fn.offset;
     while (pending) {
         uint64_t off = work[--pending];
@@ -1483,8 +1525,9 @@ static Insn *decode(Function fn, size_t *count) {
                     const uint64_t t = off + (uint64_t)in->op[0].disp;
                     if (t >= fn.offset && t < fn.offset + fn.size && !seen[t - fn.offset]) work[pending++] = t;
                 }
-                if (m == M(JMP) && in->op[0].type == OP_REG && pending + 4096 < work_capacity)
-                    jump_table(fn, list, n, work, &pending, seen);
+                if (m == M(JMP) && in->op[0].type == OP_REG &&
+                    !(pending + 4096 < work_capacity && jump_table(fn, list, n, work, &pending, seen)))
+                    computed_jump = 1;
                 /* No fall-through after these. */
                 if (m == M(JMP) || m == M(RET) || m == M(INVALID) || m == M(UD2) || m == M(HLT)) ended = 2;
                 off += in->length;
@@ -1686,11 +1729,17 @@ static void generate(Function fn, uint64_t *stats) {
     size_t count;
     Insn *list = decode(fn, &count);
     const Range f = {fn.offset, fn.offset + fn.size};
-    /* Labels only where a direct jump goes (and the entry): every other address an indirect jump
-     * or an interpreted branch reaches goes back to the translator (L_dispatch). */
-    uint64_t *targets = malloc((count + 1 + table_target_count) * sizeof(*targets));
+    /* Labels only where a direct jump goes (and the entry), or everywhere in a function with a
+     * computed jump: every other address an indirect jump or an interpreted branch reaches goes
+     * back to the translator (L_dispatch). */
+    uint64_t *targets = malloc((2 * count + 1 + table_target_count) * sizeof(*targets));
     size_t target_count = 0;
     targets[target_count++] = f.start;
+    /* Up to 1000 instructions: a label everywhere in a larger function made clang's -O2 run for
+     * over ten minutes on one file. */
+    if (computed_jump && count <= 1000) {
+        for (size_t i = 0; i < count; ++i) targets[target_count++] = list[i].off;
+    }
     for (size_t i = 0; i < table_target_count; ++i) targets[target_count++] = table_targets[i]; /* jump tables */
     for (size_t i = 0; i < count; ++i) {
         const BbInsn *in = &list[i].in;

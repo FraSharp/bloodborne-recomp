@@ -4,6 +4,7 @@
  * instruction untranslated) and bbcpu_step runs it. BB_RECOMP_OFF=OFFSET,... leaves chosen ones to
  * the translator (to find a wrong one by bisection). */
 #include <setjmp.h>
+#include <Zydis/Zydis.h>
 #include <string.h>
 #include "trace.h"
 #include "../recomp/rc.h"
@@ -172,8 +173,14 @@ static void run_translated(BbCpu *cpu, uint64_t slot) {
     frame_depth = depth;
 }
 
+/* BB_RECOMP_TARGETS=1 also counts the instructions generated code leaves to the interpreter
+ * (rc->step), by mnemonic. */
+enum { STEP_MNEMONICS = 2048 };
+static uint64_t step_counts[STEP_MNEMONICS];
 static uint64_t rc_step(BbCpu *cpu) {
     const BbBlock *block = bbcpu_block(cpu->rip);
+    if (count_targets() && block->count && (unsigned)block->insn[0].mnemonic < STEP_MNEMONICS)
+        __atomic_add_fetch(&step_counts[block->insn[0].mnemonic], 1, __ATOMIC_RELAXED);
     return bbcpu_step_insn(cpu, &block->insn[0]);
 }
 
@@ -291,6 +298,18 @@ static void *report(void *unused) {
                 const uint64_t c = __atomic_exchange_n(&targets[i].count, 0, __ATOMIC_RELAXED);
                 for (int k = 0; k < 10; ++k)
                     if (c > best[k][1]) { memmove(best[k + 1], best[k], (size_t)(9 - k) * sizeof(best[0])); best[k][0] = targets[i].rip; best[k][1] = c; break; }
+            }
+            {
+                uint64_t top[15][2] = {{0}};
+                for (int m = 0; m < STEP_MNEMONICS; ++m) {
+                    const uint64_t c = __atomic_exchange_n(&step_counts[m], 0, __ATOMIC_RELAXED);
+                    for (int k = 0; k < 15; ++k)
+                        if (c > top[k][1]) { memmove(top[k + 1], top[k], (size_t)(14 - k) * sizeof(top[0])); top[k][0] = (uint64_t)m; top[k][1] = c; break; }
+                }
+                printf("Recompiled: interpreted instructions per second:");
+                for (int k = 0; k < 15 && top[k][1]; ++k)
+                    printf(" %s:%.0f", ZydisMnemonicGetString((ZydisMnemonic)top[k][0]), (double)top[k][1] / 10.0);
+                printf("\n");
             }
             printf("Recompiled: calls into the translator by target (x64 samples):");
             for (int k = 0; k < 10 && best[k][1]; ++k)
