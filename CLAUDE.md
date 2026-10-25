@@ -78,9 +78,16 @@ C changed are compiled again.
   for A/B runs without rebuilding. The FMOD mixer was the largest difference; `rc_call` is now a
   leaf (4 points at the Sickroom); copying only the registers that need it around calls took 29
   (the generator's register sync: markers filled in from two analyses of the generated text).
-  Candidates, measure each: the size of the function table `rc_call` looks up (8 MB, 16-byte
-  entries); kills for vector registers (only general-purpose ones end a register's liveness
-  now); acquire/release on every stack access; the
+  Tried without a gain (2026-10-25): a cache at each indirect call site (the entry of the
+  function it called last, called without `rc_call`'s lookup) took 7.8 of 11.4 million calls a
+  second off `rc_call`, but CPU time stayed the same (343% against 344%) and the code grew 5.6%:
+  what `rc_call` costs in a `sample` is the indirect jump, not the lookup, so the table's size is
+  unlikely to matter either. Guest loads are already `ldapr`, as in the translator; what x86
+  ordering still costs is the barriers around vector loads and stores (`dmb ishld`, `dmb ish`:
+  333 in 3,919 instructions of one of the busiest functions). Candidates, measure each: those
+  barriers (measure the ceiling first, with a library built without them); kills for vector
+  registers (only general-purpose ones end a register's liveness now); acquire/release on every
+  stack access; the
   remaining calls into the translator (wide-character libc functions; check the PS4's `wchar_t`
   size first). Code layout showed no cost so far: with the flat table the full library takes
   what a 47k-function one did before it. `sample` gets about 2 samples a thread from a library
