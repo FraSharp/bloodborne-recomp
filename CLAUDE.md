@@ -84,10 +84,14 @@ C changed are compiled again.
   what `rc_call` costs in a `sample` is the indirect jump, not the lookup, so the table's size is
   unlikely to matter either. Guest loads are already `ldapr`, as in the translator; what x86
   ordering still costs is the barriers around vector loads and stores (`dmb ishld`, `dmb ish`:
-  333 in 3,919 instructions of one of the busiest functions). Candidates, measure each: those
-  barriers (measure the ceiling first, with a library built without them); kills for vector
+  333 in 3,919 instructions of one of the busiest functions). The ceiling of relaxing ordering,
+  measured with a library without any (2026-10-25, unsafe, local branch `r3-order-ceiling`):
+  311% against the translator's 407% at the Sickroom (3 runs each), about 33 points under the
+  register-sync library's 344%. Plain C accesses never reached the first frame (the compiler keeps
+  a spin-wait's load in a register), so a relaxed library uses relaxed atomics. Candidates, measure
+  each: vector accesses as two 8-byte `ldapr`/`stlr` (x86's guarantees, no `dmb`); kills for vector
   registers (only general-purpose ones end a register's liveness now); acquire/release on every
-  stack access; the
+  stack access (a safety case first); the
   remaining calls into the translator (wide-character libc functions; check the PS4's `wchar_t`
   size first). Code layout showed no cost so far: with the flat table the full library takes
   what a 47k-function one did before it. `sample` gets about 2 samples a thread from a library
