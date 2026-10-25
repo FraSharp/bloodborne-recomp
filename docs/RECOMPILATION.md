@@ -80,7 +80,10 @@ again only the files whose C changed:
   direct C calls; other calls go through the runtime.
 - Guest registers live in local arrays: the 16 general-purpose ones, and the vector registers
   the function's instructions name. They go back to the CPU state around calls, interpreted
-  instructions and returns. The flags are computed lazily (clang drops what nothing reads).
+  instructions and returns, only those that need to: a register is stored there if it may have
+  been written since it was last loaded, and loaded after a call only if something reads it
+  before overwriting it (two analyses over the function's gotos, done on the generated text). The
+  flags are computed lazily (clang drops what nothing reads).
 - Memory accesses keep x86's ordering between threads (acquire/release), as the translator's do,
   the stack's too: the game's jobs write into their creator's stack.
 - In C: moves, integer arithmetic and logic (with carry), shifts and rotates, multiplies and
@@ -316,3 +319,23 @@ change. Alternating runs in one session (2026-10-24):
 At the Sickroom every run of the new `rc_call` (three more: 374, 373, 375%) is below every run of
 the previous one: about 4 points, 1% of the game's CPU time. The Dream runs only check that it did
 not get worse; single runs there vary more than that.
+
+Every call copied all 16 general-purpose registers and every vector register the function names
+to the CPU state and back (about 39 copies a call in the 60 busiest functions at the Sickroom,
+counting a vector register as one). The generator now writes markers there and fills them in once
+the function is written: a store only for the registers that may have been written since they
+were last loaded (forward over the gotos), a load only for those read before being overwritten
+(backward; a register stays only in the CPU state until a `mov`, `movzx`, `movsx`, `lea` or `pop`
+overwrites all of it). The same calls make about 23 copies (9.6 stores and 9.2 loads of
+general-purpose registers, 1.6 and 2.4 of vector ones), and the library's code is 26% smaller
+(399 to 293 MB of `__text`, less than before the vector registers moved to locals). Recorded calls
+of the 60 busiest functions replay as before (2,944 of 3,018). Alternating runs in one session
+(2026-10-25):
+
+| | 1st Floor Sickroom (1,283 draws) |
+|---|---:|
+| Translator alone | 412, 396, 397% (402%), 38.6 FPS |
+| Library, fewer register copies | 345, 342, 344% (344%), 38.4 FPS |
+
+The previous library took 373% there against the translator's 398% (the table above); now the
+library takes 14% less CPU time than the translator at the same frame rate.
