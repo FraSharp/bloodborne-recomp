@@ -21,8 +21,9 @@ functions against the original. Nothing here depends on an operating system: pro
 The game's executable has 241,821 functions. Every one the library can hold is generated
 (241,031: the 660 import stubs and 130 `setjmp` callers stay with the translator), 99.1% of their
 instructions in plain C, and the game runs on them (240,973; functions changed by patches and
-hooks stay with the translator). The work now is speed: the recompiled code takes the same CPU
-time as the translator (420% of one core against 428%, 2026-10-24); next is making it cheaper. See [docs/RECOMPILATION.md](docs/RECOMPILATION.md)
+hooks stay with the translator). The work now is speed: the recompiled code takes less CPU time
+than the translator (381% of one core against 404% at the 1st Floor Sickroom lamp, 402% against
+433% in the Hunter's Dream, 2026-10-24), at the same frame rate. See [docs/RECOMPILATION.md](docs/RECOMPILATION.md)
 and the [status page](https://github.com/bloodborne-native/bloodborne-recomp/wiki/Recompilation-status).
 All docs: [docs/README.md](docs/README.md).
 

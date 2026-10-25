@@ -66,20 +66,24 @@ C changed are compiled again.
 ## Where it stands and what is next
 
 - R2 done: all 241,031 functions generated (99.1% of instructions in C), 240,973 run in the game.
-  Same frame rate and **the same CPU time as the translator** (420% of one core against 428% in
-  the Hunter's Dream, `ps -o cputime=` over 30 s, 2026-10-24; 481% before the instructions left
-  to the interpreter got C, 534% before the lookup of recompiled functions became one flat
-  table). R3 is making it cheaper than the translator. In a profile the game's code costs the
-  same recompiled as translated; the runtime's share now is mostly `rc_call`. Candidates,
-  measure each: the copy of the 16 registers to and from `BbCpu` around every call; vector
-  registers kept in `BbCpu` instead of locals; acquire/release on every stack access; the
+  Same frame rate and **less CPU time than the translator** since vector registers moved to
+  locals (`ps -o cputime=` over 30 s, 2026-10-24: 381% of one core against 404% at the 1st Floor
+  Sickroom lamp, about 1,283 draws a frame; 402% against 433% in the Hunter's Dream, 735 draws;
+  before it, 409% and 428%). R3 continues: make it cheaper still. Measure in both places (copies
+  of the two saves are in the runtime's `out/r3-saves/`, `SAVE_FROM=`), alternating with the
+  translator. The FMOD mixer was the largest difference; the runtime's share now is mostly
+  `rc_call` (about 7% of a core: `bbcpu_recomp_thread_ok` and TLS on every call). Candidates,
+  measure each: `rc_call`; the copy of the 16 registers to and from `BbCpu` around every call
+  (and of the vector registers, which grew the code 8%); acquire/release on every stack access; the
   remaining calls into the translator (wide-character libc functions; check the PS4's `wchar_t`
   size first). Code layout showed no cost so far: with the flat table the full library takes
   what a 47k-function one did before it. `sample` gets about 2 samples a thread from a library
   with its debug map: profile a copy made with `strip -S` and `codesign -s - -f`, built from the
   functions one scene runs (a translator run's `BB_JIT_MAP`, mapped to `functions.tsv`).
 - Data from earlier sessions, in `out/recomp/` of the user's clone (game-derived, never commit):
-  `records40/` (40 recorded calls of each of the 933 busiest functions: 911 match, the rest also
+  `records_r3/` (50 recorded calls of each of the 60 busiest functions at the Sickroom lamp;
+  2,944 of 3,018 match, the rest also fail with the original), `librecomp_main_a8b96c3.dylib`
+  (the library before vector locals, for A/B runs), `records40/` (40 recorded calls of each of the 933 busiest functions: 911 match, the rest also
   fail with the original), `hot.txt` (those 933), `ran.txt` (the 49,095 a 3-minute route ran),
   `all.txt`, `jitmap.txt`. Regenerate `functions.tsv` and the rest with the commands above.
 - R5 (the native renderer) is planned and worked on in bloodborne-runtime
