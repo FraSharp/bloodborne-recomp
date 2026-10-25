@@ -69,8 +69,8 @@ C changed are compiled again.
   Same frame rate and **less CPU time than the translator** since vector registers moved to
   locals, `rc_call` lost its TLS reads and calls copy only the registers that need it
   (`ps -o cputime=` over 30 s, 2026-10-25: 344% of one core against 402% at the 1st Floor
-  Sickroom lamp, about 1,283 draws a frame; before the register copies, 2026-10-24: 387% against
-  409% in the Hunter's Dream, 735 draws, one run each). R3 (2026-10-25): its goal is met and closing it is proposed to the
+  Sickroom lamp, about 1,283 draws a frame; 357% against 392% at the runtime's test save in
+  Cathedral Ward, one run each). R3 (2026-10-25): its goal is met and closing it is proposed to the
   maintainer: 99.1% of instructions in C, and the library about 14% under the translator's CPU
   time at the same frame rate. What took it there: vector registers in locals (the FMOD mixer),
   `rc_call` as a leaf (4 points at the Sickroom), and copying only the registers that need it
