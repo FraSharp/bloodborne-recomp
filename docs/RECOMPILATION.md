@@ -58,7 +58,7 @@ The recompiled code is produced on the player's machine from their copy, and sta
 | Functions recompiled, running in the game | `████████████████████` 99.6% | 240,973 of 241,821 |
 | Instructions recompiled | `███████████████████░` 95.3% | 10,743,599 of 11,268,132 |
 | Instructions in plain C (of those recompiled) | `████████████████████` 99.1% | 10,641,693 of 10,743,599 |
-| CPU time recompiled, against the translator | `███████████████████░` 94% | 381% of one core against 404% (1st Floor Sickroom), 402% against 433% (Hunter's Dream) |
+| CPU time recompiled, against the translator | `███████████████████░` 94% | 373% of one core against 398% (1st Floor Sickroom), 387% against 409% (Hunter's Dream) |
 | Functions checked call by call (recordings) | `░░░░░░░░░░░░░░░░░░░░` 0.4% | 933 of 241,821 |
 | Functions labelled by library (2026-10-24) | `█████████████░░░░░░░` 62.7% | 151,562 of 241,821 |
 
@@ -296,3 +296,23 @@ lower than the translator's. The library's code grew 8% (369 to 399 MB), from th
 calls. Recorded calls of the 60 busiest functions in that scene replay the same as the original
 code (2,944 of 3,018; the 74 others fail with the original too: one function reads `rdtsc`, and
 the job loop sees other threads' writes).
+
+`rc_call` and `rc_tail`, the runtime's path for the calls the library does not make directly
+(the runtime counts about 11.5 million
+calls of recompiled functions a second at the Sickroom lamp, nearly all through them), took about 7% of a core in a `sample` there:
+on every call a thread-local read for the `BB_RECOMP_THREADS` filter, `BB_RECOMP_NODIRECT`'s flag,
+and the call counter in thread-local storage (`_tlv_get_addr`). Now the counter lives in `BbCpu`,
+the filter and `BB_RECOMP_NODIRECT` are checked only by the versions of `call` and `tail` the
+library gets when one of them is set, and the slow paths are out of line: `rc_call` is a leaf with
+no stack frame (the lookup, the push, the count, a jump to the function). The library did not
+change. Alternating runs in one session (2026-10-24):
+
+| | 1st Floor Sickroom (1,283 draws) | Hunter's Dream (735 draws, one run each) |
+|---|---:|---:|
+| Translator alone | 396, 398, 400% (398%), 39.5 FPS | 409%, 60.0 FPS |
+| Library, previous `rc_call` (`2a5284b`) | 378, 376, 377% (377%), 39.0 FPS | 406%, 60.8 FPS |
+| Library, `rc_call` without TLS | 372, 375, 372% (373%), 39.1 FPS | 387%, 60.0 FPS |
+
+At the Sickroom every run of the new `rc_call` (three more: 374, 373, 375%) is below every run of
+the previous one: about 4 points, 1% of the game's CPU time. The Dream runs only check that it did
+not get worse; single runs there vary more than that.

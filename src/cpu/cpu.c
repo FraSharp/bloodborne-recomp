@@ -176,10 +176,12 @@ uint64_t bbcpu_call(uintptr_t fn, int count, const uint64_t *args) {
     --cpu->depth;
     if (cpu->depth) {
         const uint64_t instructions = cpu->instructions;
+        const uint32_t recomp_pending = cpu->recomp_pending;
         const uint64_t rax = cpu->r[RAX];
         const BbVec xmm0 = cpu->v[0];
         *cpu = saved;
         cpu->instructions = instructions;
+        cpu->recomp_pending = recomp_pending;
         (void)rax;
         (void)xmm0;
     }
@@ -201,8 +203,10 @@ void bbcpu_call_full(uintptr_t fn, const uint64_t gpr[6], const uint8_t xmm[8][1
         memcpy(out_xmm[0], cpu->v[0].b, 16);
         memcpy(out_xmm[1], cpu->v[1].b, 16);
         const uint64_t instructions = cpu->instructions;
+        const uint32_t recomp_pending = cpu->recomp_pending;
         *cpu = saved;
         cpu->instructions = instructions;
+        cpu->recomp_pending = recomp_pending;
         return;
     }
     for (int i = 0; i < 8; ++i) memcpy(cpu->v[i].b, xmm[i], 16);
