@@ -58,7 +58,7 @@ The recompiled code is produced on the player's machine from their copy, and sta
 | Functions recompiled, running in the game | `████████████████████` 99.6% | 240,973 of 241,821 |
 | Instructions recompiled | `███████████████████░` 95.3% | 10,743,599 of 11,268,132 |
 | Instructions in plain C (of those recompiled) | `████████████████████` 99.1% | 10,641,693 of 10,743,599 |
-| CPU time recompiled, against the translator | `████████████████████` 98% | 420% of one core against 428% |
+| CPU time recompiled, against the translator | `███████████████████░` 94% | 381% of one core against 404% (1st Floor Sickroom), 402% against 433% (Hunter's Dream) |
 | Functions checked call by call (recordings) | `░░░░░░░░░░░░░░░░░░░░` 0.4% | 933 of 241,821 |
 | Functions labelled by library (2026-10-24) | `█████████████░░░░░░░` 62.7% | 151,562 of 241,821 |
 
@@ -78,8 +78,9 @@ again only the files whose C changed:
 - The code is decoded by following its control flow from the entry. Jumps become `goto`s (labels
   only where something jumps); returns become C returns. Calls of other recompiled functions are
   direct C calls; other calls go through the runtime.
-- Guest registers live in a local array; the flags are computed lazily (clang drops what nothing
-  reads). Vector registers stay in the CPU state, so vector instructions need no spill.
+- Guest registers live in local arrays: the 16 general-purpose ones, and the vector registers
+  the function's instructions name. They go back to the CPU state around calls, interpreted
+  instructions and returns. The flags are computed lazily (clang drops what nothing reads).
 - Memory accesses keep x86's ordering between threads (acquire/release), as the translator's do,
   the stack's too: the game's jobs write into their creator's stack.
 - In C: moves, integer arithmetic and logic (with carry), shifts and rotates, multiplies and
@@ -272,3 +273,26 @@ second (string moves and `mfence`). In a `sample`, the game's code costs the sam
 translated (about 3.1 cores); what is left in the runtime is `rc_call`, the path of indirect calls
 and calls into the translator (a second: 4.3 million calls reach recompiled functions through the
 runtime, 990,000 go into the translator, 1.75 million straight to host imports).
+
+In a heavier scene the library still took more than the translator: at the 1st Floor Sickroom
+lamp (about 1,283 draws a frame, 39 FPS) 409% against 404% of one core. A `sample` there put the
+difference on the FMOD mixer thread, 90% of a core with the library against 45% translated, nearly
+all of it in two of FMOD's mixing functions (about 600 vector register operands each). The
+generated C kept vector registers in the CPU state, and the barrier after each vector load and
+before each vector store (x86 ordering, as the translator has) made clang store them there and load
+them again around every one: the translator keeps them in NEON registers. With the vector
+registers a function names in locals, those two functions have half the loads and stores (2,891 to
+1,450 and 3,001 to 1,744) and 34% and 21% fewer instructions, and the library is cheaper than the
+translator in both places (2026-10-24, three alternating runs each):
+
+| | 1st Floor Sickroom (1,283 draws) | Hunter's Dream (735 draws) |
+|---|---:|---:|
+| Translator alone | 399, 407, 406% (404%), 39.2 FPS | 439, 430, 431% (433%), 59.8 FPS |
+| Library before (main `a8b96c3`) | 402, 410, 415% (409%), 39.3 FPS | 430, 423, 431% (428%), 60.3 FPS |
+| Library, vector registers in locals | 379, 383, 382% (381%), 38.8 FPS | 402, 401, 402% (402%), 58.9 FPS |
+
+The frame rate is the same within about 1%; per frame, CPU time is 5% (Sickroom) and 6% (Dream)
+lower than the translator's. The library's code grew 8% (369 to 399 MB), from the copies around
+calls. Recorded calls of the 60 busiest functions in that scene replay the same as the original
+code (2,944 of 3,018; the 74 others fail with the original too: one function reads `rdtsc`, and
+the job loop sees other threads' writes).

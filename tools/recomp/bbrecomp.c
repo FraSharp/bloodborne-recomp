@@ -3,10 +3,11 @@
  * against src/recomp/rc.h, in files OUT_<n>.c, and the library's table and entry point in OUT.c.
  * Build: tools/recomp/recomp.sh.
  *
- * Generated code keeps the guest registers in a local array and the flags lazily; every
- * instruction gets a label. Instructions the generator does not translate run in the interpreter
- * (rc->step) with the state spilled around them; a branch to an unknown place goes back to the
- * translator (rc->bail) or, out of the function, is a tail call (rc->tail). */
+ * Generated code keeps the guest registers in local arrays (of the vector ones, those it uses)
+ * and the flags lazily; every instruction gets a label. Instructions the generator does not
+ * translate run in the interpreter (rc->step) with the state spilled around them; a branch to an
+ * unknown place goes back to the translator (rc->bail) or, out of the function, is a tail call
+ * (rc->tail). */
 #include "../../src/cpu/trace.h"
 #include <inttypes.h>
 #include <stdarg.h>
@@ -114,8 +115,11 @@ static void close_output(void) {
     fclose(out);
 }
 
-#define SPILL "memcpy(c->r, r, sizeof(r));"
-#define RELOAD "memcpy(r, c->r, sizeof(r));"
+/* The guest registers to and from the BbCpu around what reads or writes them there (calls, the
+ * interpreter, returns): the general-purpose ones, and the vector registers the function uses
+ * (RC_VOUT, RC_VIN: defined for each function, from vused). */
+#define SPILL "memcpy(c->r, r, sizeof(r)); RC_VOUT"
+#define RELOAD "memcpy(r, c->r, sizeof(r)); RC_VIN"
 #define COND "rc_cond(%d, fk, fa, fb, fr, fz, fcf, c->flags)"
 #define FLAGS_OUT "c->flags = rc_flags(fk, fa, fb, fr, fz, fcf, c->flags); fk = FK_CPU;"
 #define FLAGS_NOW "rc_flags(fk, fa, fb, fr, fz, fcf, c->flags)"
@@ -435,12 +439,22 @@ static int translate(Range f, uint64_t off, const BbInsn *in, uint64_t *stats) {
 
 /* ---- vector instructions (as src/cpu/interp_vec.c does them) ---- */
 
-static int vreg(const BbOp *op) { return op->type == OP_REG && op->kind == RK_VEC; }
+/* The vector registers the function being generated keeps in locals (xmm[], see generate): the
+ * ones its instructions name. A translation that reaches another is a generator bug. */
+static uint32_t vused;
+static int vlocal(int reg) {
+    if (reg < 0 || reg > 15 || !(vused >> reg & 1)) {
+        fprintf(stderr, "bbrecomp: xmm%d is not kept in a local\n", reg);
+        exit(1);
+    }
+    return reg;
+}
+static int vreg(const BbOp *op) { return op->type == OP_REG && op->kind == RK_VEC && vlocal(op->reg) >= 0; }
 static int vwidth(const BbInsn *in) { return in->vex && in->vl ? in->vl : 16; }
 
 /* A vector operand's value (a BbVec expression). */
 static int vread(uint64_t off, const BbInsn *in, const BbOp *op, Str *v) {
-    if (vreg(op)) { *v = str("c->v[%d]", op->reg); return 1; }
+    if (vreg(op)) { *v = str("xmm[%d]", op->reg); return 1; }
     if (op->type == OP_MEM) {
         Str a;
         int stack;
@@ -459,7 +473,7 @@ static int vread(uint64_t off, const BbInsn *in, const BbOp *op, Str *v) {
 
 /* A statement writing BbVec `v` (`bytes` of it to a register). */
 static int vwrite(uint64_t off, const BbInsn *in, const BbOp *op, const char *v, int bytes, Str *s) {
-    if (vreg(op)) { *s = str("rc_vset(&c->v[%d], %s, %d, %d);", op->reg, v, bytes, in->vex ? 1 : 0); return 1; }
+    if (vreg(op)) { *s = str("rc_vset(&xmm[%d], %s, %d, %d);", op->reg, v, bytes, in->vex ? 1 : 0); return 1; }
     if (op->type == OP_MEM) {
         Str a;
         int stack;
@@ -525,7 +539,7 @@ static int translate_vector(uint64_t off, const BbInsn *in) {
         if (!vreg(d)) return 0;
         if (in->count == 3) {
             if (!vread(off, in, &in->op[1], &a) || !vread(off, in, &in->op[2], &b)) return 0;
-            emit("{ BbVec rr = %s; const BbVec b = %s; memcpy(rr.b, b.b, %d); rc_vset(&c->v[%d], rr, 16, %d); }\n", a.s, b.s,
+            emit("{ BbVec rr = %s; const BbVec b = %s; memcpy(rr.b, b.b, %d); rc_vset(&xmm[%d], rr, 16, %d); }\n", a.s, b.s,
                  bytes, d->reg, in->vex ? 1 : 0);
             return 1;
         }
@@ -534,12 +548,12 @@ static int translate_vector(uint64_t off, const BbInsn *in) {
             Str ad;
             int stack;
             if (!address(off, in, src, &ad, &stack)) return 0;
-            if (in->vex) emit("rc_vset(&c->v[%d], rc_vld(%s, %d), 16, 1);\n", d->reg, ad.s, bytes);
-            else emit("{ const BbVec rr = rc_vld(%s, %d); memcpy(c->v[%d].b, rr.b, 16); }\n", ad.s, bytes, d->reg);
+            if (in->vex) emit("rc_vset(&xmm[%d], rc_vld(%s, %d), 16, 1);\n", d->reg, ad.s, bytes);
+            else emit("{ const BbVec rr = rc_vld(%s, %d); memcpy(xmm[%d].b, rr.b, 16); }\n", ad.s, bytes, d->reg);
             return 1;
         }
         if (!vreg(src)) return 0;
-        emit("{ BbVec rr = c->v[%d]; memcpy(rr.b, c->v[%d].b, %d); rc_vset(&c->v[%d], rr, 16, %d); }\n", d->reg,
+        emit("{ BbVec rr = xmm[%d]; memcpy(rr.b, xmm[%d].b, %d); rc_vset(&xmm[%d], rr, 16, %d); }\n", d->reg,
              src->reg, bytes, d->reg, in->vex ? 1 : 0);
         return 1;
     }
@@ -641,8 +655,8 @@ static int translate_vector(uint64_t off, const BbInsn *in) {
         const int bytes = (m == M(MOVD) || m == M(VMOVD)) ? 4 : 8;
         if (!vread(off, in, src, &a)) return 0;
         if (vreg(d)) {
-            emit("{ BbVec rr; memset(&rr, 0, sizeof(rr)); const BbVec s = %s; memcpy(rr.b, s.b, %d); memcpy(c->v[%d].b, rr.b, 16);%s }\n",
-                 a.s, bytes, d->reg, in->vex ? str(" memset(c->v[%d].b + 16, 0, 16);", d->reg).s : "");
+            emit("{ BbVec rr; memset(&rr, 0, sizeof(rr)); const BbVec s = %s; memcpy(rr.b, s.b, %d); memcpy(xmm[%d].b, rr.b, 16);%s }\n",
+                 a.s, bytes, d->reg, in->vex ? str(" memset(xmm[%d].b + 16, 0, 16);", d->reg).s : "");
             return 1;
         }
         if (d->type == OP_MEM) {
@@ -683,7 +697,7 @@ static int translate_vector(uint64_t off, const BbInsn *in) {
                 !vread(off, in, &in->op[3], &mk)) return 0;
         } else {
             if (!vread(off, in, &in->op[0], &a) || !vread(off, in, &in->op[1], &b)) return 0;
-            mk = str("c->v[0]");
+            mk = str("xmm[%d]", vlocal(0));
         }
         if (!vwrite(off, in, &in->op[0], "rr", w, &s)) return 0;
         const int es = (m == M(BLENDVPS) || m == M(VBLENDVPS)) ? 4 : (m == M(BLENDVPD) || m == M(VBLENDVPD)) ? 8 : 1;
@@ -1514,17 +1528,31 @@ static void generate(Function fn, uint64_t *stats) {
     }
     qsort(targets, target_count, sizeof(*targets), by_offset);
     emit("\n/* 0x%" PRIx64 ", %" PRIu64 " bytes, %zu instructions */\n", fn.offset, fn.size, count);
+    /* Vector registers in locals: the ones the instructions name (non-VEX blendv reads xmm0). */
+    vused = 0;
+    for (size_t i = 0; i < count; ++i) {
+        const BbInsn *in = &list[i].in;
+        for (int k = 0; k < 5; ++k)
+            if (in->op[k].type == OP_REG && in->op[k].kind == RK_VEC && in->op[k].reg < 16) vused |= 1u << in->op[k].reg;
+        const int m = in->mnemonic;
+        if (!in->vex && (m == M(BLENDVPS) || m == M(BLENDVPD) || m == M(PBLENDVB))) vused |= 1;
+    }
+    emit("#define RC_VOUT");
+    for (int k = 0; k < 16; ++k) if (vused >> k & 1) emit(" c->v[%d] = xmm[%d];", k, k);
+    emit("\n#define RC_VIN");
+    for (int k = 0; k < 16; ++k) if (vused >> k & 1) emit(" xmm[%d] = c->v[%d];", k, k);
+    emit("\n");
     if (snippet_mode) emit("static void s_%" PRIx64 "(BbCpu *c) {\n", snippet_line);
     else emit("__attribute__((visibility(\"hidden\"))) void f_%" PRIx64 "(BbCpu *c) {\n", fn.offset);
     emit("    const uint64_t B = rc->image_base;\n");
-    emit("    uint64_t r[16];\n    " RELOAD "\n");
+    emit("    uint64_t r[16];\n    BbVec xmm[16];\n    " RELOAD "\n");
     emit("    int fk = FK_CPU, fz = 8, fcf = 0;\n    uint64_t fa = 0, fb = 0, fr = 0, dn = 0;\n");
     emit("    const uint64_t entry_rsp = r[RSP];\n");
     emit("    (void)fa; (void)fb; (void)fr; (void)fz; (void)fcf; (void)entry_rsp; (void)dn;\n");
     for (size_t i = 0; i < count; ++i) {
         const Insn *x = &list[i];
         if (bsearch(&x->off, targets, target_count, sizeof(*targets), by_offset)) emit("L_%" PRIx64 ": ", x->off);
-        if (trace_points) emit("rc->trace(0x%" PRIx64 ", r, c); ", x->off);
+        if (trace_points) emit("RC_VOUT rc->trace(0x%" PRIx64 ", r, c); ", x->off);
         ++stats[2];
         const long mark = ftell(out);
         if (translate(f, x->off, &x->in, stats)) {
@@ -1544,6 +1572,7 @@ static void generate(Function fn, uint64_t *stats) {
     emit("    " SPILL " " FLAGS_OUT "\n    c->rip = dn;\n");
     emit("    if ((dn - B >= 0x%" PRIx64 "ull && dn - B < 0x%" PRIx64 "ull) || r[RSP] != entry_rsp) rc->bail(c, entry_rsp); /* the translator */\n", f.start, f.end);
     emit("    else rc->tail(c); /* out of the function, the stack as at its entry: a tail call */\n}\n");
+    emit("#undef RC_VOUT\n#undef RC_VIN\n");
     free(targets);
     free(list);
 }
