@@ -131,7 +131,7 @@ static void jit_native(BbCpu *cpu, const void *fn) {
 static void jit_recomp(BbCpu *cpu, RcFn fn) {
     jit_to_x86(cpu);
     if (bbcpu_recomp_thread_ok()) {
-        bbcpu_recomp_counted();
+        bbcpu_recomp_counted(cpu);
         fn(cpu);
     } else { /* not on this thread (BB_RECOMP_THREADS): translated, returning to a sentinel */
         const uint64_t next = bb_load(cpu->r[RSP], 8);

@@ -65,18 +65,23 @@ void bbcpu_guard_return(BbCpu *cpu);
 typedef void (*RcFn)(BbCpu *cpu);
 extern int bbcpu_recomp_count;
 extern uint64_t bbcpu_recomp_calls;
-/* Counts a call of a recompiled function: per thread, added to bbcpu_recomp_calls in batches (one
- * shared counter costs as much as a short function when every thread calls them). */
-static inline void bbcpu_recomp_counted(void) {
-    static _Thread_local uint32_t pending;
-    if (++pending == 4096) {
-        __atomic_add_fetch(&bbcpu_recomp_calls, pending, __ATOMIC_RELAXED);
-        pending = 0;
+/* Counts a call of a recompiled function: per thread (in its BbCpu, not TLS: a lookup per call),
+ * added to bbcpu_recomp_calls in batches (one shared counter costs as much as a short function
+ * when every thread calls them). */
+static inline void bbcpu_recomp_counted(BbCpu *cpu) {
+    if (++cpu->recomp_pending == 4096) {
+        __atomic_add_fetch(&bbcpu_recomp_calls, cpu->recomp_pending, __ATOMIC_RELAXED);
+        cpu->recomp_pending = 0;
     }
 }
 RcFn bbcpu_recomp_at(uint64_t address);
-/* Whether this thread runs recompiled functions (BB_RECOMP_THREADS, diagnostics). */
-int bbcpu_recomp_thread_ok(void);
+/* Whether this thread runs recompiled functions (BB_RECOMP_THREADS, diagnostics). Without a
+ * thread filter (bbcpu_recomp_load sets the flag) only the flag is read. */
+extern int bbcpu_recomp_threads_filtered;
+int bbcpu_recomp_thread_named(void);
+static inline int bbcpu_recomp_thread_ok(void) {
+    return !bbcpu_recomp_threads_filtered || bbcpu_recomp_thread_named();
+}
 /* The hash of the code at [start, start + size) the recompiler goes by (recomp.c): instruction
  * bytes, the loader's TCB loads (mov reg, fs:[0], rewritten as gs loads) as one token. */
 uint64_t bbcpu_recomp_hash(uint64_t start, uint64_t size);

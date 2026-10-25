@@ -87,7 +87,8 @@ static int name_matches(const char *list, const char *name) {
         if (*part && strstr(name, part)) return 1;
     return 0;
 }
-int bbcpu_recomp_thread_ok(void) {
+int bbcpu_recomp_threads_filtered;
+int bbcpu_recomp_thread_named(void) {
     static _Thread_local int ok = -1;
     if (ok < 0) {
         const char *only = getenv("BB_RECOMP_THREADS"), *not = getenv("BB_RECOMP_NOT_THREADS");
@@ -204,35 +205,62 @@ static int call_import(BbCpu *cpu, uint64_t target) {
     return 1;
 }
 
-static void rc_call(BbCpu *cpu, uint64_t target, uint64_t next) {
-    const RcFn fn = no_direct() || !bbcpu_recomp_thread_ok() ? NULL : bbcpu_recomp_at(target);
-    cpu->r[RSP] -= 8;
-    if (fn) {
-        bbcpu_recomp_counted();
-        bb_store(cpu->r[RSP], 8, next);
-        cpu->rip = target;
-        fn(cpu);
-        return;
-    }
-    bb_store(cpu->r[RSP], 8, next);
+/* The rest of rc_call and rc_tail, out of line: their recompiled path then needs no stack frame. */
+static __attribute__((noinline)) void call_other(BbCpu *cpu, uint64_t target, uint64_t next) {
     if (call_import(cpu, target)) return;
     /* The translator (and natives, imports: bbcpu_run calls them). */
     cpu->rip = target;
     run_translated(cpu, cpu->r[RSP]);
     cpu->rip = next;
 }
-
-static void rc_tail(BbCpu *cpu) {
-    const RcFn fn = no_direct() || !bbcpu_recomp_thread_ok() ? NULL : bbcpu_recomp_at(cpu->rip);
-    if (fn) {
-        bbcpu_recomp_counted();
-        fn(cpu);
-        return;
-    }
+static __attribute__((noinline)) void tail_other(BbCpu *cpu) {
     if (call_import(cpu, cpu->rip)) return; /* a tail call of an import: it returns for us */
     const uint64_t back = bb_load(cpu->r[RSP], 8);
     run_translated(cpu, cpu->r[RSP]);
     cpu->rip = back;
+}
+
+static void rc_call(BbCpu *cpu, uint64_t target, uint64_t next) {
+    const RcFn fn = bbcpu_recomp_at(target);
+    cpu->r[RSP] -= 8;
+    bb_store(cpu->r[RSP], 8, next);
+    if (!fn) {
+        call_other(cpu, target, next);
+        return;
+    }
+    bbcpu_recomp_counted(cpu);
+    cpu->rip = target;
+    fn(cpu);
+}
+
+static void rc_tail(BbCpu *cpu) {
+    const RcFn fn = bbcpu_recomp_at(cpu->rip);
+    if (!fn) {
+        tail_other(cpu);
+        return;
+    }
+    bbcpu_recomp_counted(cpu);
+    fn(cpu);
+}
+
+/* rc_call and rc_tail with BB_RECOMP_NODIRECT or a thread filter: bbcpu_recomp_load gives these
+ * to the library only then, so the calls of a normal run (11.5 million a second at the Sickroom
+ * lamp) check neither. */
+static int recomp_here(void) {
+    return !no_direct() && bbcpu_recomp_thread_ok();
+}
+static void rc_call_checked(BbCpu *cpu, uint64_t target, uint64_t next) {
+    if (recomp_here()) {
+        rc_call(cpu, target, next);
+        return;
+    }
+    cpu->r[RSP] -= 8;
+    bb_store(cpu->r[RSP], 8, next);
+    call_other(cpu, target, next);
+}
+static void rc_tail_checked(BbCpu *cpu) {
+    if (recomp_here()) rc_tail(cpu);
+    else tail_other(cpu);
 }
 
 static void rc_bail(BbCpu *cpu, uint64_t entry_rsp) {
@@ -352,9 +380,12 @@ void bbcpu_recomp_load(uint64_t image_base) {
         return;
     }
     bbcpu_return_hook = return_hook;
+    bbcpu_recomp_threads_filtered = getenv("BB_RECOMP_THREADS") || getenv("BB_RECOMP_NOT_THREADS");
+    const int checked = no_direct() || bbcpu_recomp_threads_filtered;
     static RcApi api;
     api = (RcApi){.version = BB_RECOMP_API_VERSION, .image_base = image_base, .step = rc_step,
-                  .call = rc_call, .tail = rc_tail, .bail = rc_bail};
+                  .call = checked ? rc_call_checked : rc_call, .tail = checked ? rc_tail_checked : rc_tail,
+                  .bail = rc_bail};
     size_t count = 0;
     const RcFunction *functions = init(&api, &count);
     reserve(count);

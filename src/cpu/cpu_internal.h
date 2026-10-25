@@ -66,6 +66,9 @@ typedef struct BbCpu {
     struct BbJitCacheEntry *jit_cache;
     uint64_t instructions;
     BbWatch *watch; /* allocated only for BB_JIT_WATCH diagnostics */
+    /* Calls of recompiled functions not yet added to bbcpu_recomp_calls (trace.h). Last: libraries
+     * built before it read the fields above at the same offsets. */
+    uint32_t recomp_pending;
 } BbCpu;
 
 /* Operand of a decoded instruction (compact copy of Zydis's). */
