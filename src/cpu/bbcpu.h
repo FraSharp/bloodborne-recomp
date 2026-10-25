@@ -57,6 +57,11 @@ uint64_t bbcpu_call_on_stack(uintptr_t fn, int count, const uint64_t *args, void
 void bbcpu_set_thread_pointer(uintptr_t tcb);
 /* Optional diagnostic label for the calling thread. */
 void bbcpu_set_thread_label(const char *name);
+/* The guest's SSE and x87 control words (MXCSR, FCW) of this thread: get reads them (the defaults
+ * before the thread ran guest code), set gives them to its guest code. A new thread starts with its
+ * creator's, as FreeBSD's libthr does. */
+void bbcpu_get_fp_control(uint32_t *mxcsr, uint16_t *fcw);
+void bbcpu_set_fp_control(uint32_t mxcsr, uint16_t fcw);
 /* Note a completed host memory write for opt-in JIT watch diagnostics. */
 void bbcpu_watch_write(uintptr_t address, size_t size);
 /* The GS displacement of the loader's rewritten `mov rax, fs:[0]` (relocation kind 3). */
@@ -114,6 +119,8 @@ static inline uint64_t bbcpu_call(uintptr_t fn, int count, const uint64_t *args)
 }
 static inline void bbcpu_set_thread_pointer(uintptr_t tcb) { (void)tcb; }
 static inline void bbcpu_set_thread_label(const char *name) { (void)name; }
+static inline void bbcpu_get_fp_control(uint32_t *mxcsr, uint16_t *fcw) { *mxcsr = 0x1f80; *fcw = 0x37f; }
+static inline void bbcpu_set_fp_control(uint32_t mxcsr, uint16_t fcw) { (void)mxcsr; (void)fcw; }
 static inline void bbcpu_watch_write(uintptr_t address, size_t size) { (void)address; (void)size; }
 static inline uint64_t bbcpu_tsc(void) { return 0; }
 static inline uint64_t bbcpu_import_return(void) { return 0; }

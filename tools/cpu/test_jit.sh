@@ -11,6 +11,8 @@ ROSETTA_ADVERTISE_AVX=1 out/jit_guest > out/jit_guest.expected
 clang -arch arm64 -O2 -std=gnu11 -I$D/include tests/test_jit.c src/cpu/cpu.c src/cpu/decode.c \
     src/cpu/interp.c src/cpu/interp_vec.c src/cpu/interp_x87.c src/cpu/record.c src/cpu/native.c src/cpu/recomp.c src/cpu/jit_arm64.c \
     src/cpu/hostcall.S $D/lib/libZydis.a $D/lib/libZycore.a -o out/test_jit
+# BBCPU_FTZ=1: t_mxcsr checks the approximate FTZ-only and DAZ-only mappings too.
+export BBCPU_FTZ=1
 echo "== interpreter"; BB_JIT=0 out/test_jit out/jit_guest out/jit_guest.expected
 echo "== JIT"; out/test_jit out/jit_guest out/jit_guest.expected
 
