@@ -58,7 +58,7 @@ The recompiled code is produced on the player's machine from their copy, and sta
 | Functions recompiled, running in the game | `████████████████████` 99.6% | 240,973 of 241,821 |
 | Instructions recompiled | `███████████████████░` 95.3% | 10,743,599 of 11,268,132 |
 | Instructions in plain C (of those recompiled) | `████████████████████` 99.1% | 10,641,693 of 10,743,599 |
-| CPU time recompiled, against the translator | `███████████████████░` 94% | 373% of one core against 398% (1st Floor Sickroom), 387% against 409% (Hunter's Dream) |
+| CPU time recompiled, against the translator | `█████████████████░░░` 86% | 344% of one core against 402% (1st Floor Sickroom), 357% against 392% (Cathedral Ward) |
 | Functions checked call by call (recordings) | `░░░░░░░░░░░░░░░░░░░░` 0.4% | 933 of 241,821 |
 | Functions labelled by library (2026-10-24) | `█████████████░░░░░░░` 62.7% | 151,562 of 241,821 |
 
