@@ -67,17 +67,20 @@ C changed are compiled again.
 
 - R2 done: all 241,031 functions generated (99.1% of instructions in C), 240,973 run in the game.
   Same frame rate and **less CPU time than the translator** since vector registers moved to
-  locals and `rc_call` lost its TLS reads (`ps -o cputime=` over 30 s, 2026-10-24: 373% of one
-  core against 398% at the 1st Floor Sickroom lamp, about 1,283 draws a frame; 387% against 409%
-  in the Hunter's Dream, 735 draws, one run each). R3 continues: make it cheaper still. Measure at
+  locals, `rc_call` lost its TLS reads and calls copy only the registers that need it
+  (`ps -o cputime=` over 30 s, 2026-10-25: 344% of one core against 402% at the 1st Floor
+  Sickroom lamp, about 1,283 draws a frame; before the register copies, 2026-10-24: 387% against
+  409% in the Hunter's Dream, 735 draws, one run each). R3 continues: make it cheaper still. Measure at
   the Sickroom while working, the Dream once before a PR (copies of the two saves are in the
   runtime's `out/r3-saves/`; `SAVE_FROM=DIR` goes in the environment: `tools/test_run.sh` does not
   read it from its `ENV=VALUE` arguments, and without it copies the player's current save),
   alternating with the translator; `BB_PROBE=` runs another build of `bb-probe` (keep the name)
   for A/B runs without rebuilding. The FMOD mixer was the largest difference; `rc_call` is now a
-  leaf (4 points at the Sickroom). Candidates, measure each: the size of the function table
-  `rc_call` looks up (8 MB, 16-byte entries); the copy of the 16 registers to and from `BbCpu`
-  around every call (and of the vector registers, which grew the code 8%); acquire/release on every stack access; the
+  leaf (4 points at the Sickroom); copying only the registers that need it around calls took 29
+  (the generator's register sync: markers filled in from two analyses of the generated text).
+  Candidates, measure each: the size of the function table `rc_call` looks up (8 MB, 16-byte
+  entries); kills for vector registers (only general-purpose ones end a register's liveness
+  now); acquire/release on every stack access; the
   remaining calls into the translator (wide-character libc functions; check the PS4's `wchar_t`
   size first). Code layout showed no cost so far: with the flat table the full library takes
   what a 47k-function one did before it. `sample` gets about 2 samples a thread from a library

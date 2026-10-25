@@ -116,10 +116,12 @@ static void close_output(void) {
 }
 
 /* The guest registers to and from the BbCpu around what reads or writes them there (calls, the
- * interpreter, returns): the general-purpose ones, and the vector registers the function uses
- * (RC_VOUT, RC_VIN: defined for each function, from vused). */
-#define SPILL "memcpy(c->r, r, sizeof(r)); RC_VOUT"
-#define RELOAD "memcpy(r, c->r, sizeof(r)); RC_VIN"
+ * interpreter, returns): markers that generate replaces with the copies each place needs (see
+ * sync_scan). SPILL before what reads them, RELOAD after what may change them, RELOAD_IF there on
+ * a path that may not be taken (a slow path inside a translation). */
+#define SPILL "@S"
+#define RELOAD "@R"
+#define RELOAD_IF "@r"
 #define COND "rc_cond(%d, fk, fa, fb, fr, fz, fcf, c->flags)"
 #define FLAGS_OUT "c->flags = rc_flags(fk, fa, fb, fr, fz, fcf, c->flags); fk = FK_CPU;"
 #define FLAGS_NOW "rc_flags(fk, fa, fb, fr, fz, fcf, c->flags)"
@@ -254,10 +256,10 @@ static void jump(Range f, uint64_t t) {
 
 /* The instruction in the interpreter: state spilled, flags in cpu->flags; an unexpected next rip
  * dispatches. Also the slow path of translations (division faults). */
-static void emit_interp(uint64_t off, const BbInsn *in) {
-    emit("/* %s */ { " SPILL " " FLAGS_OUT " c->rip = B + 0x%" PRIx64 "ull; const uint64_t n = rc->step(c); " RELOAD
+static void emit_interp(uint64_t off, const BbInsn *in, int slow_path) {
+    emit("/* %s */ { " SPILL " " FLAGS_OUT " c->rip = B + 0x%" PRIx64 "ull; const uint64_t n = rc->step(c); %s"
          " if (n != B + 0x%" PRIx64 "ull) { dn = n; goto L_dispatch; } }",
-         ZydisMnemonicGetString((ZydisMnemonic)in->mnemonic), off, off + in->length);
+         ZydisMnemonicGetString((ZydisMnemonic)in->mnemonic), off, slow_path ? RELOAD_IF : RELOAD, off + in->length);
 }
 
 static int translate_vector(uint64_t off, const BbInsn *in);
@@ -1334,7 +1336,7 @@ static int translate_bits(uint64_t off, const BbInsn *in) {
                  "const __int128 n = (__int128)(((unsigned __int128)hi << 64) | lo), qq = n / s; ok = qq == (int64_t)qq; "
                  "q = (int64_t)qq; rem = (int64_t)(n %% s); } else ok = 0; ", a.s);
         emit("if (ok) { r[RAX] = %s; r[RDX] = %s; } else ", size == 4 ? "(uint32_t)q" : "(uint64_t)q", size == 4 ? "(uint32_t)rem" : "(uint64_t)rem");
-        emit_interp(off, in);
+        emit_interp(off, in, 1);
         emit(" }\n");
         return 1;
     }
@@ -1508,6 +1510,178 @@ static int by_offset(const void *a, const void *b) {
     return x < y ? -1 : x > y;
 }
 
+/* ---- register sync ---- */
+
+/* generate writes a function's instructions with the SPILL/RELOAD markers, then fills them in from
+ * the text, with two analyses over the gotos between the instructions (registers as masks: r[n]
+ * bits 0-15, xmm[n] bits 16-31):
+ * - dirty (forward): the registers whose local may differ from the BbCpu's, written since the
+ *   last RELOAD. A SPILL stores those.
+ * - live (backward): the registers read before they are written again; a SPILL reads its dirty
+ *   ones. A RELOAD loads those, and the entry; the others keep their value in the BbCpu only,
+ *   until an instruction overwrites them whole (mov, movzx, movsx, lea, pop into a 32- or 64-bit
+ *   register, its only mention). */
+enum { EV_USE, EV_WRITE, EV_KILL, EV_SPILL, EV_RELOAD, EV_RELOAD_IF, EV_GOTO, EV_DISPATCH };
+typedef struct { int kind; uint32_t mask; uint64_t target; } SyncEvent;
+static SyncEvent *events;
+static size_t event_count, event_capacity;
+static const uint32_t *marker_masks; /* for the markers in order, while writing the text */
+static size_t marker_next;
+
+static int ident_char(char ch) { return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_'; }
+
+static void event(int kind, uint32_t mask, uint64_t target) {
+    if (event_count == event_capacity) {
+        event_capacity = event_capacity ? 2 * event_capacity : 4096;
+        events = realloc(events, event_capacity * sizeof(*events));
+    }
+    events[event_count++] = (SyncEvent){kind, mask, target};
+}
+
+static void sync_copy(FILE *o, uint32_t mask, int load) {
+    for (int k = 0; k < 16; ++k)
+        if (mask >> k & 1) fprintf(o, load ? " r[%d] = c->r[%d];" : " c->r[%d] = r[%d];", k, k);
+    for (int k = 0; k < 16; ++k)
+        if (mask >> (16 + k) & 1) fprintf(o, load ? " xmm[%d] = c->v[%d];" : " c->v[%d] = xmm[%d];", k, k);
+}
+
+/* A register index as generated code writes it (r[3], r[RSP]) at s, or -1. */
+static int sync_index(const char *s, size_t n, size_t *end) {
+    static const char *const names[16] = {"RAX", "RCX", "RDX", "RBX", "RSP", "RBP", "RSI", "RDI",
+                                          "R8", "R9", "R10", "R11", "R12", "R13", "R14", "R15"};
+    size_t j = 0;
+    while (j < n && ident_char(s[j])) ++j;
+    if (!j || j >= n || s[j] != ']') return -1;
+    *end = j + 1;
+    if (s[0] >= '0' && s[0] <= '9') {
+        const long v = strtol(s, NULL, 10);
+        return v >= 0 && v < 16 ? (int)v : -1;
+    }
+    for (int k = 0; k < 16; ++k)
+        if (strlen(names[k]) == j && !memcmp(s, names[k], j)) return k;
+    return -1;
+}
+
+/* Goes through the generated text of one instruction. Without `o`, notes its events in order: a
+ * register's mention is a use, and a write too where an assignment follows it (after any .member
+ * or [index]), its address is taken or a member array of it is (xmm[n].b, as memcpy's
+ * destination); a bare r or xmm is all of them. `kill` (or -1): the register the instruction
+ * overwrites whole, if this is its only mention. With `o`, writes the text there with the
+ * markers filled in from marker_masks. */
+static void sync_scan(const char *s, size_t n, int kill, FILE *o) {
+    size_t i = 0, run = 0;
+    const size_t first = event_count;
+    int kill_mentions = 0;
+    while (i < n) {
+        if (s[i] == '/' && i + 1 < n && s[i + 1] == '*') { /* comments name instructions and imports */
+            i += 2;
+            while (i + 1 < n && !(s[i] == '*' && s[i + 1] == '/')) ++i;
+            i += 2;
+            continue;
+        }
+        if (s[i] == '@' && i + 1 < n) {
+            const int kind = s[i + 1] == 'S' ? EV_SPILL : s[i + 1] == 'R' ? EV_RELOAD : s[i + 1] == 'r' ? EV_RELOAD_IF : -1;
+            if (kind < 0) {
+                fprintf(stderr, "bbrecomp: unknown sync marker @%c\n", s[i + 1]);
+                exit(1);
+            }
+            if (o) {
+                fwrite(s + run, 1, i - run, o);
+                sync_copy(o, marker_masks[marker_next++], kind != EV_SPILL);
+            } else {
+                event(kind, 0, 0);
+            }
+            i += 2;
+            run = i;
+            continue;
+        }
+        if (!ident_char(s[i]) || (i && ident_char(s[i - 1]))) { ++i; continue; }
+        size_t j = i;
+        while (j < n && ident_char(s[j])) ++j;
+        const size_t len = j - i;
+        const int vec = len == 3 && !memcmp(s + i, "xmm", 3);
+        if (o) {
+        } else if (len == 4 && !memcmp(s + i, "goto", 4)) {
+            size_t k = j;
+            while (k < n && s[k] == ' ') ++k;
+            if (k + 10 <= n && !memcmp(s + k, "L_dispatch", 10)) event(EV_DISPATCH, 0, 0);
+            else if (k + 2 < n && !memcmp(s + k, "L_", 2)) event(EV_GOTO, 0, strtoull(s + k + 2, NULL, 16));
+            else {
+                fprintf(stderr, "bbrecomp: a goto the register sync does not know: %.40s\n", s + i);
+                exit(1);
+            }
+        } else if (len == 7 && !memcmp(s + i, "RC_VOUT", 7)) { /* trace points */
+            event(EV_USE, 0xffff0000u, 0);
+        } else if ((vec || (len == 1 && s[i] == 'r')) && !(i && (s[i - 1] == '.' || s[i - 1] == '>'))) {
+            if (j < n && s[j] == '[') {
+                size_t end;
+                const int k = sync_index(s + j + 1, n - j - 1, &end);
+                if (k < 0) {
+                    fprintf(stderr, "bbrecomp: a register the register sync does not know: %.40s\n", s + i);
+                    exit(1);
+                }
+                const uint32_t bit = 1u << (k + (vec ? 16 : 0));
+                int write = i && s[i - 1] == '&', assign = 0;
+                if (i >= 2 && ((s[i - 1] == '+' && s[i - 2] == '+') || (s[i - 1] == '-' && s[i - 2] == '-'))) write = 1;
+                size_t p = j + 1 + end;
+                int array = 0;
+                for (;;) { /* .member, [index] */
+                    if (p < n && s[p] == '.') {
+                        ++p;
+                        while (p < n && ident_char(s[p])) ++p;
+                        array = 1;
+                    } else if (p < n && s[p] == '[') {
+                        int depth = 0;
+                        do depth += s[p] == '[' ? 1 : s[p] == ']' ? -1 : 0;
+                        while (++p < n && depth);
+                        array = 0;
+                    } else {
+                        break;
+                    }
+                }
+                if (array) write = 1; /* xmm[n].b as a pointer: memcpy's destination */
+                while (p < n && s[p] == ' ') ++p;
+                if (p + 1 < n) {
+                    const char a = s[p], b = s[p + 1];
+                    if (a == '=' && b != '=') { write = 1; assign = p == j + 1 + end + 1; }
+                    if (b == '=' && strchr("+-*/%&|^", a)) write = 1;
+                    if ((a == '+' && b == '+') || (a == '-' && b == '-')) write = 1;
+                    if (p + 2 < n && ((a == '<' && b == '<') || (a == '>' && b == '>')) && s[p + 2] == '=') write = 1;
+                }
+                if (!vec && k == kill) {
+                    ++kill_mentions;
+                    if (!assign || !write) kill = -1;
+                }
+                event(!vec && k == kill ? EV_KILL : EV_USE, bit, 0);
+                if (write) event(EV_WRITE, bit, 0);
+            } else {
+                const uint32_t all = vec ? 0xffff0000u : 0xffffu;
+                event(EV_USE, all, 0);
+                event(EV_WRITE, all, 0);
+            }
+        }
+        i = j;
+    }
+    if (o) {
+        fwrite(s + run, 1, n - run, o);
+        return;
+    }
+    /* A kill only as the instruction's one mention of it, in straight code. */
+    for (size_t e = first; e < event_count; ++e)
+        if (events[e].kind == EV_KILL && (kill_mentions != 1 || kill < 0 || memmem(s, n, "if", 2) || memchr(s, '?', n) ||
+                                          memchr(s, '@', n) || memmem(s, n, "goto", 4)))
+            events[e].kind = EV_USE;
+}
+
+/* The register an instruction overwrites whole (its 32 or 64 bits), or -1. */
+static int sync_kill(const BbInsn *in) {
+    const int m = in->mnemonic;
+    const BbOp *d = &in->op[0];
+    if (!in->count || d->type != OP_REG || d->kind != RK_GPR || d->reg > 15 || (d->size != 4 && d->size != 8)) return -1;
+    if (m == M(MOV) || m == M(MOVZX) || m == M(MOVSX) || m == M(MOVSXD) || m == M(LEA)) return d->reg;
+    return m == M(POP) && d->size == 8 ? d->reg : -1;
+}
+
 static void generate(Function fn, uint64_t *stats) {
     size_t count;
     Insn *list = decode(fn, &count);
@@ -1537,20 +1711,19 @@ static void generate(Function fn, uint64_t *stats) {
         const int m = in->mnemonic;
         if (!in->vex && (m == M(BLENDVPS) || m == M(BLENDVPD) || m == M(PBLENDVB))) vused |= 1;
     }
-    emit("#define RC_VOUT");
-    for (int k = 0; k < 16; ++k) if (vused >> k & 1) emit(" c->v[%d] = xmm[%d];", k, k);
-    emit("\n#define RC_VIN");
-    for (int k = 0; k < 16; ++k) if (vused >> k & 1) emit(" xmm[%d] = c->v[%d];", k, k);
-    emit("\n");
+    if (trace_points) { /* the trace reads the locals: all of them are kept */
+        emit("#define RC_VOUT");
+        for (int k = 0; k < 16; ++k) if (vused >> k & 1) emit(" c->v[%d] = xmm[%d];", k, k);
+        emit("\n");
+    }
     if (snippet_mode) emit("static void s_%" PRIx64 "(BbCpu *c) {\n", snippet_line);
     else emit("__attribute__((visibility(\"hidden\"))) void f_%" PRIx64 "(BbCpu *c) {\n", fn.offset);
-    emit("    const uint64_t B = rc->image_base;\n");
-    emit("    uint64_t r[16];\n    BbVec xmm[16];\n    " RELOAD "\n");
-    emit("    int fk = FK_CPU, fz = 8, fcf = 0;\n    uint64_t fa = 0, fb = 0, fr = 0, dn = 0;\n");
-    emit("    const uint64_t entry_rsp = r[RSP];\n");
-    emit("    (void)fa; (void)fb; (void)fr; (void)fz; (void)fcf; (void)entry_rsp; (void)dn;\n");
+    /* The instructions, each from starts[i]; then the copies filled in (register sync). */
+    const long body = ftell(out);
+    long *starts = malloc((count + 1) * sizeof(*starts));
     for (size_t i = 0; i < count; ++i) {
         const Insn *x = &list[i];
+        starts[i] = ftell(out) - body;
         if (bsearch(&x->off, targets, target_count, sizeof(*targets), by_offset)) emit("L_%" PRIx64 ": ", x->off);
         if (trace_points) emit("RC_VOUT rc->trace(0x%" PRIx64 ", r, c); ", x->off);
         ++stats[2];
@@ -1560,19 +1733,119 @@ static void generate(Function fn, uint64_t *stats) {
             continue;
         }
         fseek(out, mark, SEEK_SET); /* what a translation wrote before it gave up */
-        emit_interp(x->off, &x->in);
+        emit_interp(x->off, &x->in, 0);
         emit("\n");
     }
-    if (snippet_mode) emit("    " SPILL " " FLAGS_OUT " c->rip = B + 0x%" PRIx64 "ull; return;\n", f.end);
+    starts[count] = ftell(out) - body;
+    char *text = malloc((size_t)starts[count] + 1);
+    fseek(out, body, SEEK_SET);
+    if (fread(text, 1, (size_t)starts[count], out) != (size_t)starts[count]) { perror("bbrecomp: reading back"); exit(1); }
+    fseek(out, body, SEEK_SET);
+    /* The events of each instruction, from evs[i]. */
+    size_t *evs = malloc((count + 1) * sizeof(*evs));
+    event_count = 0;
+    for (size_t i = 0; i < count; ++i) {
+        evs[i] = event_count;
+        sync_scan(text + starts[i], (size_t)(starts[i + 1] - starts[i]), sync_kill(&list[i].in), NULL);
+    }
+    evs[count] = event_count;
+    if (trace_points) event(EV_USE, 0xffffu, 0); /* the entry: the trace reads all of r */
+    for (size_t e = 0; e < evs[count]; ++e) {
+        if (events[e].kind != EV_GOTO) continue;
+        const Insn *t = bsearch(&events[e].target, list, count, sizeof(*list), by_offset);
+        if (!t) { fprintf(stderr, "bbrecomp: goto L_%" PRIx64 " without its instruction\n", events[e].target); exit(1); }
+        events[e].target = (uint64_t)(t - list); /* the instruction it goes to */
+    }
+    unsigned char *is_case = malloc(count); /* L_dispatch's cases */
+    for (size_t i = 0; i < count; ++i) is_case[i] = bsearch(&list[i].off, targets, target_count, sizeof(*targets), by_offset) != NULL;
+    /* Dirty sets at each instruction's start (the entry clean), to a fixed point; L_dispatch takes
+     * its set to every case and to the exit. The set at each SPILL goes in mask[]. */
+    uint32_t *mask = calloc(evs[count] + 1, sizeof(*mask));
+    uint32_t *dirty_in = calloc(count + 1, sizeof(*dirty_in)), dispatch = 0;
+    for (int changed = 1; changed;) {
+        changed = 0;
+        for (size_t i = 0; i < count; ++i) {
+            uint32_t dirty = dirty_in[i];
+            for (size_t e = evs[i]; e < evs[i + 1]; ++e) {
+                const SyncEvent *v = &events[e];
+                if (v->kind == EV_WRITE) dirty |= v->mask;
+                else if (v->kind == EV_SPILL) mask[e] = dirty;
+                else if (v->kind == EV_RELOAD) dirty = 0;
+                else if (v->kind == EV_DISPATCH) dispatch |= dirty;
+                else if (v->kind == EV_GOTO && (dirty_in[v->target] | dirty) != dirty_in[v->target]) {
+                    dirty_in[v->target] |= dirty;
+                    changed = 1;
+                }
+            }
+            if ((dirty_in[i + 1] | dirty) != dirty_in[i + 1]) { dirty_in[i + 1] |= dirty; changed = 1; }
+        }
+        for (size_t i = 0; i < count; ++i)
+            if (is_case[i] && (dirty_in[i] | dispatch) != dirty_in[i]) { dirty_in[i] |= dispatch; changed = 1; }
+    }
+    const uint32_t dirty_out = dispatch | dirty_in[count]; /* L_dispatch's default, past the end */
+    const uint32_t end_out = snippet_mode ? dirty_in[count] : dirty_out;
+    /* Live sets at each instruction's start, to a fixed point; the exits read their dirty
+     * registers and RSP. The set after each RELOAD goes in mask[]. */
+    uint32_t *live_in = calloc(count + 1, sizeof(*live_in)), live_dispatch = 0;
+    live_in[count] = end_out | 1u << RSP;
+    for (int changed = 1; changed;) {
+        changed = 0;
+        uint32_t cases = dirty_out | 1u << RSP;
+        for (size_t i = 0; i < count; ++i) cases |= is_case[i] ? live_in[i] : 0;
+        if (cases != live_dispatch) { live_dispatch = cases; changed = 1; }
+        for (size_t i = count; i-- > 0;) {
+            uint32_t live = live_in[i + 1];
+            for (size_t e = evs[i + 1]; e-- > evs[i];) {
+                const SyncEvent *v = &events[e];
+                if (v->kind == EV_USE) live |= v->mask;
+                else if (v->kind == EV_KILL) live &= ~v->mask;
+                else if (v->kind == EV_SPILL) live |= mask[e];
+                else if (v->kind == EV_RELOAD) { mask[e] = live; live = 0; }
+                else if (v->kind == EV_RELOAD_IF) mask[e] = live;
+                else if (v->kind == EV_GOTO) live |= live_in[v->target];
+                else if (v->kind == EV_DISPATCH) live |= live_dispatch;
+            }
+            if ((live_in[i] | live) != live_in[i]) { live_in[i] |= live; changed = 1; }
+        }
+    }
+    uint32_t entry = live_in[0] | 1u << RSP; /* entry_rsp */
+    for (size_t e = evs[count]; e < event_count; ++e) entry |= events[e].mask;
+    emit("    const uint64_t B = rc->image_base;\n");
+    emit("    uint64_t r[16];\n    BbVec xmm[16];\n   ");
+    sync_copy(out, entry, 1);
+    emit("\n    int fk = FK_CPU, fz = 8, fcf = 0;\n    uint64_t fa = 0, fb = 0, fr = 0, dn = 0;\n");
+    emit("    const uint64_t entry_rsp = r[RSP];\n");
+    emit("    (void)fa; (void)fb; (void)fr; (void)fz; (void)fcf; (void)entry_rsp; (void)dn;\n");
+    /* The text with the copies: the masks of the markers in order. */
+    size_t markers = 0;
+    for (size_t e = 0; e < evs[count]; ++e)
+        if (events[e].kind == EV_SPILL || events[e].kind == EV_RELOAD || events[e].kind == EV_RELOAD_IF) mask[markers++] = mask[e];
+    marker_masks = mask;
+    marker_next = 0;
+    for (size_t i = 0; i < count; ++i)
+        sync_scan(text + starts[i], (size_t)(starts[i + 1] - starts[i]), -1, out);
+    if (snippet_mode) {
+        emit("   ");
+        sync_copy(out, end_out, 0);
+        emit(" " FLAGS_OUT " c->rip = B + 0x%" PRIx64 "ull; return;\n", f.end);
+    }
     emit("    dn = B + 0x%" PRIx64 "ull; /* past the end */\n", f.end);
     emit("L_dispatch:\n    switch (dn - B) {\n");
     for (size_t i = 0; i < target_count; ++i)
         if (!i || targets[i] != targets[i - 1]) emit("    case 0x%" PRIx64 ": goto L_%" PRIx64 ";\n", targets[i], targets[i]);
-    emit("    default: break;\n    }\n");
-    emit("    " SPILL " " FLAGS_OUT "\n    c->rip = dn;\n");
+    emit("    default: break;\n    }\n   ");
+    sync_copy(out, dirty_out, 0);
+    emit(" " FLAGS_OUT "\n    c->rip = dn;\n");
     emit("    if ((dn - B >= 0x%" PRIx64 "ull && dn - B < 0x%" PRIx64 "ull) || r[RSP] != entry_rsp) rc->bail(c, entry_rsp); /* the translator */\n", f.start, f.end);
     emit("    else rc->tail(c); /* out of the function, the stack as at its entry: a tail call */\n}\n");
-    emit("#undef RC_VOUT\n#undef RC_VIN\n");
+    if (trace_points) emit("#undef RC_VOUT\n");
+    free(live_in);
+    free(dirty_in);
+    free(mask);
+    free(is_case);
+    free(evs);
+    free(text);
+    free(starts);
     free(targets);
     free(list);
 }
@@ -1589,7 +1862,7 @@ static int snippets(const char *encodings, const char *path) {
     bbcpu_run(&warm, 0);
     snippet_mode = 1;
     FILE *in = fopen(encodings, "r");
-    out = fopen(path, "w");
+    out = fopen(path, "w+"); /* generate reads each function back */
     if (!in || !out) { perror(encodings); return 1; }
     emit("/* Written by tools/recomp/bbrecomp.c --snippets (tests/fuzz_recomp.c). */\n");
     emit("#include \"recomp/rc.h\"\n\nstatic const RcApi *rc;\n");
@@ -1734,7 +2007,7 @@ int main(int argc, char **argv) {
             if (out) close_output();
             window = functions[i].offset / WINDOW;
             snprintf(path, sizeof(path), "%.*s_%05" PRIx64 ".c", (int)stem, argv[3], window);
-            out = fopen(path, "w");
+            out = fopen(path, "w+"); /* generate reads each function back */
             if (!out) { perror(path); return 1; }
             ++files;
             emit("/* Written by tools/recomp/bbrecomp.c from the game's eboot.bin: not to be distributed. */\n");
