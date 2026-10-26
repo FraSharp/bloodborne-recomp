@@ -45,13 +45,13 @@ The recompiled code is produced on the player's machine from their copy, and sta
 | R0 | Groundwork: function table, library labels, CPU profile, record and replay, native functions loaded into the game and called from translated code | Done |
 | R1 | Recompiler prototype: generated C for the recorded functions, checked by replay | Done |
 | R2 | Coverage: every function generated; the game runs recompiled, the translator as fallback | Done |
-| R3 | Speed: integer, flags and vector instructions in C; memory ordering relaxed where safe | In progress |
+| R3 | Speed: integer, flags and vector instructions in C; memory ordering relaxed where safe | Done: 99.1% of instructions in C; the library takes 14% less CPU time than the translator at the same frame rate |
 | R4 | Annotations: names, signatures and structs make the generated C readable | |
-| R5 | The engine's graphics on each platform's own GPU API: [native renderer](https://github.com/bloodborne-native/bloodborne-runtime/blob/main/docs/NATIVE_RENDERER.md) (bloodborne-runtime) | N1 closed; N5 (Metal backend): the frame draws through Metal behind an experimental renderer option, 550 pipelines built, 0 failed |
+| R5 | The engine's graphics on each platform's own GPU API: [native renderer](https://github.com/bloodborne-native/bloodborne-runtime/blob/main/docs/NATIVE_RENDERER.md) (bloodborne-runtime) | N1 and N4 done; N5 (Metal backend): the default renderer on macOS, acceptance pending |
 
 ## Progress
 
-*2026-10-24.* The game's executable has 241,821 functions, about 11.3 million instructions.
+*2026-10-25.* The game's executable has 241,821 functions, about 11.3 million instructions.
 
 | | Progress | |
 |---|---|---|
@@ -154,7 +154,7 @@ game's patches changed stay with the translator) at 55.2 FPS against ~60 with th
 alone. Calls of imports the runtime provides go from recompiled code straight to them (2.4 million
 a second); the runtime now provides `strcmp`, `ldiv`, `powf` and `modff` too, which were the
 busiest calls left in the PS4 libc's own code. 1.45 million calls a second still enter the
-translator: what is left for R3, with the hot code spread through the large library.
+translator: R3's starting point, with the hot code spread through the large library.
 
 ## Tools
 
@@ -260,7 +260,7 @@ boundaries between game, FD4 and Dantelion2 stay approximate. The functions left
 Profiles in the Hunter's Dream (2026-10-10): the game's main thread is about 95% busy in a
 cutscene and spread thin in play (933 functions ran in 20 s; the busiest 145 take half of the
 time; the job loop is the largest at 7.3%). No small set of functions dominates, so the CPU side
-gets faster by recompiling all of them, which R2 did; R3 makes that code cheaper.
+gets faster by recompiling all of them, which R2 did; R3 made that code cheaper.
 
 CPU time (2026-10-24, M3 Pro, standing in the Hunter's Dream at about 730 draws a frame,
 `ps -o cputime=` over 30 s): the translator alone takes 418–429% of one core, the full library
@@ -360,7 +360,10 @@ ordered accesses account for those 33 points, they are the ordering of the ordin
 itself. What would reach part of them safely: plain accesses to a function's own frame when the
 function never computes an address in its stack (no `lea` from `rsp` or `rbp`, `rsp` copied
 nowhere but `rbp`), so that no other thread can reach the frame; the caller's frame stays ordered.
-That needs an analysis in the generator, a safety case and a long play session. Two more open
-points: about 565,000 calls a second still go into the translator at the Sickroom, and the library
-runs about 0.5 FPS under the translator there (38.0 against 38.6 in every round).
+That needs an analysis in the generator, a safety case and a long play session.
+
+R3 is closed with that: its goal was met. Three follow-ups stay open, none needed for play: plain
+accesses to a function's own frame (above); the calls that still go into the translator (about
+565,000 a second at the Sickroom; `BB_RECOMP_TARGETS=1` names them); and the library running about
+0.5 FPS under the translator at the Sickroom (38.0 against 38.6 in every round), not yet explained.
 
