@@ -339,3 +339,28 @@ of the 60 busiest functions replay as before (2,944 of 3,018). Alternating runs 
 
 The previous library took 373% there against the translator's 398% (the table above); now the
 library takes 14% less CPU time than the translator at the same frame rate.
+
+Three more changes after that saved no measurable CPU time (the Sickroom, three alternating runs
+each, 2026-10-25), and were left out:
+
+| | Translator | Library | Code |
+|---|---:|---:|---:|
+| A cache at each indirect call site (the entry of the function it called last) | 396% | 343% | +5.6% |
+| Vector accesses as two 8-byte `ldapr`/`stlr` instead of a barrier | 400% | 348% | +4.6% |
+| `ldapur`/`stlur`, the ordered accesses with their offset (`-mcpu=apple-m2`) | 397% | 341% | −3% |
+
+The cache took 7.8 of 11.4 million calls a second off `rc_call`: what `rc_call` costs is its
+indirect jump, not the lookup. The M1 target has no `ldapur`/`stlur`.
+
+The ceiling of relaxing memory ordering, measured with a library that has none (unsafe, not
+published): 311% against the translator's 407%, about 33 points under the library above. Its
+accesses are relaxed atomics: with plain C accesses the game hung before the first frame (clang
+kept a spin-wait's load in a register). Since neither the vector barriers nor the offsets of the
+ordered accesses account for those 33 points, they are the ordering of the ordinary accesses
+itself. What would reach part of them safely: plain accesses to a function's own frame when the
+function never computes an address in its stack (no `lea` from `rsp` or `rbp`, `rsp` copied
+nowhere but `rbp`), so that no other thread can reach the frame; the caller's frame stays ordered.
+That needs an analysis in the generator, a safety case and a long play session. Two more open
+points: about 565,000 calls a second still go into the translator at the Sickroom, and the library
+runs about 0.5 FPS under the translator there (38.0 against 38.6 in every round).
+
