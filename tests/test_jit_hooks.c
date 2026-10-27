@@ -15,7 +15,7 @@ void *runtime_low_map(size_t size, int prot) {
 
 enum { RAX = 0, RDI = 7 };
 enum { CALL_NATIVE = 0x000, CALL_GUARDED = 0x040, NATIVE = 0x100, GUARDED = 0x200, FALLS_INTO = 0x300,
-       PROBED = 0x305, PROBED_INTERPRETED = 0x340, CALLS = 1000 };
+       PROBED = 0x305, PROBED_INTERPRETED = 0x340, GUARDED_TAIL = 0x380, CALLS = 1000 };
 
 static uint8_t *guest;
 
@@ -38,6 +38,18 @@ static uint64_t guard_enter(const uint64_t regs[16], uint32_t tag) {
 static void guard_leave(uint64_t cookie) {
     ++guard_leaves;
     assert(cookie == guard_leaves);
+}
+
+static uint64_t tail_enters, tail_leaves, inner_leaves_at_tail_leave;
+static uint64_t tail_enter(const uint64_t regs[16], uint32_t tag) {
+    (void)regs;
+    assert(tag == 8);
+    return ++tail_enters;
+}
+static void tail_leave(uint64_t cookie) {
+    assert(cookie == tail_enters);
+    ++tail_leaves;
+    inner_leaves_at_tail_leave = guard_leaves;
 }
 
 static uint64_t probe_hits, probe_rax, interpreted_probe_hits;
@@ -71,11 +83,15 @@ int main(void) {
     put(FALLS_INTO, (const uint8_t[]){0xb8, 5, 0, 0, 0, 0x83, 0xc0, 0x02, 0xc3}, 9);
     /* PROBED_INTERPRETED: cld (interpreted inside translated code); mov eax, 9; ret */
     put(PROBED_INTERPRETED, (const uint8_t[]){0xfc, 0xb8, 9, 0, 0, 0, 0xc3}, 7);
+    /* GUARDED_TAIL: jmp GUARDED (both guarded calls return at once) */
+    put_call(GUARDED_TAIL, GUARDED);
+    guest[GUARDED_TAIL] = 0xe9;
 
     const uintptr_t base = (uintptr_t)guest;
     bbcpu_add_guest_code(base, 4096);
     bbcpu_set_native(base + NATIVE, (const void *)&native_function);
     bbcpu_set_guard(base + GUARDED, guard_enter, guard_leave, 7);
+    bbcpu_set_guard(base + GUARDED_TAIL, tail_enter, tail_leave, 8);
     bbcpu_set_probe(base + PROBED, probe, 3);
     bbcpu_set_probe(base + PROBED_INTERPRETED, interpreted_probe, 4);
 
@@ -87,6 +103,11 @@ int main(void) {
     assert(guard_arguments == (uint64_t)CALLS * (CALLS + 1) / 2);
     assert(bbcpu_call(base + GUARDED, 1, &calls) == CALLS + 1);
     assert(guard_enters == CALLS + 1 && guard_leaves == CALLS + 1);
+    for (uint64_t i = 1; i <= 3; ++i) {
+        assert(bbcpu_call(base + GUARDED_TAIL, 1, &i) == i + 1);
+        assert(tail_enters == i && tail_leaves == i);
+        assert(guard_leaves == CALLS + 1 + i && inner_leaves_at_tail_leave == guard_leaves);
+    }
 
     for (int i = 1; i <= 3; ++i) {
         assert(bbcpu_call(base + FALLS_INTO, 0, NULL) == 7);
