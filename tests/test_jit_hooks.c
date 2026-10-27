@@ -15,7 +15,7 @@ void *runtime_low_map(size_t size, int prot) {
 
 enum { RAX = 0, RDI = 7 };
 enum { CALL_NATIVE = 0x000, CALL_GUARDED = 0x040, NATIVE = 0x100, GUARDED = 0x200, FALLS_INTO = 0x300,
-       PROBED = 0x305, CALLS = 1000 };
+       PROBED = 0x305, PROBED_INTERPRETED = 0x340, CALLS = 1000 };
 
 static uint8_t *guest;
 
@@ -40,11 +40,16 @@ static void guard_leave(uint64_t cookie) {
     assert(cookie == guard_leaves);
 }
 
-static uint64_t probe_hits, probe_rax;
+static uint64_t probe_hits, probe_rax, interpreted_probe_hits;
 static void probe(const uint64_t regs[16], uint64_t address, uint32_t tag) {
     assert(address == (uintptr_t)guest + PROBED && tag == 3);
     ++probe_hits;
     probe_rax = regs[RAX];
+}
+static void interpreted_probe(const uint64_t regs[16], uint64_t address, uint32_t tag) {
+    (void)regs;
+    assert(address == (uintptr_t)guest + PROBED_INTERPRETED && tag == 4);
+    ++interpreted_probe_hits;
 }
 
 int main(void) {
@@ -64,12 +69,15 @@ int main(void) {
     put(GUARDED, (const uint8_t[]){0x55, 0x89, 0xf8, 0x83, 0xc0, 0x01, 0x5d, 0xc3}, 8);
     /* FALLS_INTO: mov eax, 5; PROBED: add eax, 2; ret */
     put(FALLS_INTO, (const uint8_t[]){0xb8, 5, 0, 0, 0, 0x83, 0xc0, 0x02, 0xc3}, 9);
+    /* PROBED_INTERPRETED: cld (interpreted inside translated code); mov eax, 9; ret */
+    put(PROBED_INTERPRETED, (const uint8_t[]){0xfc, 0xb8, 9, 0, 0, 0, 0xc3}, 7);
 
     const uintptr_t base = (uintptr_t)guest;
     bbcpu_add_guest_code(base, 4096);
     bbcpu_set_native(base + NATIVE, (const void *)&native_function);
     bbcpu_set_guard(base + GUARDED, guard_enter, guard_leave, 7);
     bbcpu_set_probe(base + PROBED, probe, 3);
+    bbcpu_set_probe(base + PROBED_INTERPRETED, interpreted_probe, 4);
 
     for (uint64_t i = 1; i <= 3; ++i) assert(bbcpu_call(base + CALL_NATIVE, 1, &i) == i * 3);
 
@@ -86,6 +94,10 @@ int main(void) {
     }
     bbcpu_call(base + PROBED, 0, NULL);
     assert(probe_hits == 4);
+    for (uint64_t i = 1; i <= 3; ++i) {
+        assert(bbcpu_call(base + PROBED_INTERPRETED, 0, NULL) == 9);
+        assert(interpreted_probe_hits == i);
+    }
     puts("PASS: native functions, guards and probes");
     return 0;
 }

@@ -37,7 +37,7 @@ enum { T0 = 0, T1 = 1, T2 = 2, T3 = 3, T4 = 4, T5 = 5, TA = 16, TB = 17, FL = 8,
 
 enum { CODE_SIZE = 128 << 20 };
 static uint32_t *code_base, *code_end, *code_next;
-static uint32_t *enter_stub, *exit_stub, *fallback_stub, *native_stub, *recomp_stub;
+static uint32_t *enter_stub, *exit_stub, *fallback_stub, *native_stub, *recomp_stub, *probe_stub;
 static pthread_mutex_t jit_lock = PTHREAD_MUTEX_INITIALIZER;
 static uint64_t translated_blocks, fallback_insns;
 /* Translated blocks in code order (the buffer only grows), for fault reports. */
@@ -109,10 +109,12 @@ static void profile_note(const BbInsn *in) {
     }
 }
 
-/* Called from translated code for instructions it does not translate (registers synced). */
+/* Called from translated code for instructions it does not translate (registers synced). Native
+ * and recompiled functions and probes start blocks, which the dispatcher and probe_stub handle:
+ * only the instruction runs here. */
 static void jit_fallback(BbCpu *cpu, const BbInsn *in) {
     jit_to_x86(cpu);
-    bbcpu_step(cpu, in);
+    bbcpu_step_insn(cpu, in);
     x86_to_jit(cpu);
     ++fallback_insns;
     profile_note(in);
@@ -223,6 +225,8 @@ static int jit_init(void) {
             native_stub = host_call_stub(&a, (const void *)&jit_native);
             /* TA = the function's guest address, TB = the recompiled function */
             recomp_stub = host_call_stub(&a, (const void *)&jit_recomp);
+            /* TA = the probed address */
+            probe_stub = host_call_stub(&a, (const void *)&bbcpu_run_probe);
             code_next = a64_here(&a);
             pthread_jit_write_protect_np(1);
             sys_icache_invalidate(code_base, (size_t)(code_next - code_base) * 4);
@@ -2352,12 +2356,15 @@ static void *translate(BbBlock *block) {
     uint32_t *start = code_next;
     uint64_t rip = block->start;
     int ended = 0, translated = 0;
-    /* BB_RECORD, native and recompiled functions and probes (record.c, native.c, recomp.c): their
-     * first instruction goes through bbcpu_step. */
+    /* BB_RECORD, native and recompiled functions (record.c, native.c, recomp.c): their first
+     * instruction goes through bbcpu_step. A probed block runs its probes first. */
     const int recorded = (bbcpu_record_armed && bbcpu_record_target(block->start)) ||
                          (bbcpu_native_count && bbcpu_native_at(block->start)) ||
-                         (bbcpu_probe_count && bbcpu_probe_at(block->start)) ||
                          (bbcpu_recomp_count && bbcpu_recomp_at(block->start));
+    if (!recorded && bbcpu_probe_count && bbcpu_probe_at(block->start)) {
+        a64_mov_imm(&t.a, TA, block->start);
+        a64_bl(&t.a, (int32_t)(probe_stub - a64_here(&t.a)));
+    }
     for (uint32_t i = 0; i < block->count && !ended && !recorded; ++i) {
         const BbInsn *in = &block->insn[i];
         t.rip = rip;

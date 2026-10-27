@@ -51,8 +51,8 @@ const void *bbcpu_native_at(uint64_t address);
  * no return address pushed; interp.c). */
 void bbcpu_call_native(BbCpu *cpu, const void *fn);
 
-/* Probes (native.c): run the probe at `address`, if any (bbcpu_step; the JIT leaves the first
- * instruction of a probed address to it). */
+/* Probes (native.c): run the probes at cpu->rip, if any (bbcpu_step, and translated code at the
+ * start of a probed block; decode.c starts a block at each probed address). */
 extern int bbcpu_probe_count;
 int bbcpu_probe_at(uint64_t address);
 void bbcpu_run_probe(BbCpu *cpu);
