@@ -27,20 +27,33 @@ void bbcpu_add_guest_code(uintptr_t start, size_t size) {
 
 int bbcpu_is_guest(uintptr_t address) { return bbcpu_is_guest_code(address); }
 
-/* Blocks covering the range are unlinked (and leaked: another thread may be running them). */
+static uint32_t hash(uint64_t rip);
+
+/* Blocks covering bucket h's part of the range are unlinked (and leaked: another thread may be
+ * running them). */
+static void unlink_overlapping(uint32_t h, uint64_t address, uint64_t size) {
+    BbBlock **link = &buckets[h];
+    while (*link) {
+        BbBlock *b = *link;
+        uint64_t end = b->start;
+        for (uint32_t i = 0; i < b->count; ++i) end += b->insn[i].length;
+        if (b->start < address + size && address < end) __atomic_store_n(link, b->next, __ATOMIC_RELEASE);
+        else link = &b->next;
+    }
+}
+
+/* A block holds at most MAX_BLOCK instructions of at most 15 bytes, so a block overlapping the
+ * range starts at most MAX_BLOCK * 15 - 1 bytes before it: only those start addresses' buckets
+ * are looked at, not the whole table. */
 void bbcpu_invalidate(uintptr_t address, size_t size) {
+    const uint64_t reach = MAX_BLOCK * 15 - 1;
+    const uint64_t first = address > reach ? address - reach : 0;
+    const uint64_t last = address + size; /* exclusive */
     pthread_mutex_lock(&insert_lock);
-    for (uint32_t h = 0; h < BUCKETS; ++h) {
-        BbBlock **link = &buckets[h];
-        while (*link) {
-            BbBlock *b = *link;
-            const BbInsn *last = &b->insn[b->count - 1];
-            uint64_t end = b->start;
-            for (uint32_t i = 0; i < b->count; ++i) end += b->insn[i].length;
-            (void)last;
-            if (b->start < address + size && address < end) __atomic_store_n(link, b->next, __ATOMIC_RELEASE);
-            else link = &b->next;
-        }
+    if (last - first >= BUCKETS) {
+        for (uint32_t h = 0; h < BUCKETS; ++h) unlink_overlapping(h, address, size);
+    } else {
+        for (uint64_t start = first; start < last; ++start) unlink_overlapping(hash(start), address, size);
     }
     pthread_mutex_unlock(&insert_lock);
 }
