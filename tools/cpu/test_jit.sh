@@ -20,3 +20,9 @@ echo "== JIT"; out/test_jit out/jit_guest out/jit_guest.expected
 clang -arch arm64 -O2 -std=gnu11 -I"$D/include" tests/test_jit_fault.c src/cpu/*.c \
     src/cpu/hostcall.S "$D/lib/libZydis.a" "$D/lib/libZycore.a" -o out/test_jit_fault
 out/test_jit_fault
+
+# Native functions, guards and probes run once per call, translated and interpreted.
+clang -arch arm64 -O2 -std=gnu11 -I"$D/include" tests/test_jit_hooks.c src/cpu/*.c \
+    src/cpu/hostcall.S "$D/lib/libZydis.a" "$D/lib/libZycore.a" -o out/test_jit_hooks
+BB_JIT=0 out/test_jit_hooks
+out/test_jit_hooks

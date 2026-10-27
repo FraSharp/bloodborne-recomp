@@ -37,7 +37,8 @@ enum { T0 = 0, T1 = 1, T2 = 2, T3 = 3, T4 = 4, T5 = 5, TA = 16, TB = 17, FL = 8,
 
 enum { CODE_SIZE = 128 << 20 };
 static uint32_t *code_base, *code_end, *code_next;
-static uint32_t *enter_stub, *exit_stub, *fallback_stub, *native_stub, *recomp_stub;
+static uint32_t *enter_stub, *exit_stub, *fallback_stub, *native_stub, *recomp_stub, *probe_stub,
+                *guard_return_stub;
 static pthread_mutex_t jit_lock = PTHREAD_MUTEX_INITIALIZER;
 static uint64_t translated_blocks, fallback_insns;
 /* Translated blocks in code order (the buffer only grows), for fault reports. */
@@ -109,10 +110,12 @@ static void profile_note(const BbInsn *in) {
     }
 }
 
-/* Called from translated code for instructions it does not translate (registers synced). */
+/* Called from translated code for instructions it does not translate (registers synced). Native
+ * and recompiled functions and probes start blocks, which the dispatcher and probe_stub handle:
+ * only the instruction runs here. */
 static void jit_fallback(BbCpu *cpu, const BbInsn *in) {
     jit_to_x86(cpu);
-    bbcpu_step(cpu, in);
+    bbcpu_step_insn(cpu, in);
     x86_to_jit(cpu);
     ++fallback_insns;
     profile_note(in);
@@ -162,6 +165,43 @@ static void sync_in(A64 *a) {
     a64_ldr_uoff(a, 3, FAB, CPU, OFF(jf_ab));
 }
 
+/* Indirect branch cache, per thread (BbCpu): guest rip -> translated code. */
+enum { CACHE_BITS = 14 };
+struct BbJitCacheEntry { uint64_t rip; void *code; };
+static struct BbJitCacheEntry *cache_entry(BbCpu *cpu, uint64_t rip) {
+    return &cpu->jit_cache[(rip >> 2) & ((1u << CACHE_BITS) - 1)];
+}
+
+/* A guarded call's return reached from translated code through the marker's cache entry: the
+ * guard's leave, then the translated code at the real return address if the cache has it. */
+static void *jit_guard_return(BbCpu *cpu) {
+    bbcpu_guard_return(cpu);
+    const struct BbJitCacheEntry *entry = cache_entry(cpu, cpu->rip);
+    return entry->rip == cpu->rip ? entry->code : NULL;
+}
+
+/* fn(cpu, TB) in C from translated code: the guest's registers are stored in the BbCpu around
+ * the call. */
+static void host_call(A64 *a, const void *fn) {
+    sync_out(a);
+    a64_stp_pre(a, 29, 30, SP, -16);
+    a64_mov(a, 1, 0, CPU);
+    a64_mov(a, 1, 1, TB);
+    a64_mov_imm(a, TA, (uint64_t)(uintptr_t)fn);
+    a64_blr(a, TA);
+    a64_ldp_post(a, 29, 30, SP, 16);
+    sync_in(a);
+}
+
+/* A stub translated code calls (bl) to run fn(cpu, TB) with TA as the guest rip. */
+static uint32_t *host_call_stub(A64 *a, const void *fn) {
+    uint32_t *stub = a64_here(a);
+    a64_str_uoff(a, 3, TA, CPU, OFF(rip));
+    host_call(a, fn);
+    a64_ret(a);
+    return stub;
+}
+
 static int jit_init(void) {
     static int state; /* 0 unknown, 1 on, -1 off */
     if (state) return state > 0;
@@ -200,42 +240,21 @@ static int jit_init(void) {
             a64_ldp(&a, 27, 28, SP, 80);
             a64_ldp_post(&a, 29, 30, SP, 96);
             a64_ret(&a);
-            /* fallback: TA = guest rip, TB = the BbInsn; registers synced around jit_fallback. */
-            fallback_stub = a64_here(&a);
-            sync_out(&a);
-            a64_str_uoff(&a, 3, TA, CPU, OFF(rip));
-            a64_stp_pre(&a, 29, 30, SP, -16);
-            a64_mov(&a, 1, 0, CPU);
-            a64_mov(&a, 1, 1, TB);
-            a64_mov_imm(&a, TA, (uint64_t)(uintptr_t)&jit_fallback);
-            a64_blr(&a, TA);
-            a64_ldp_post(&a, 29, 30, SP, 16);
-            sync_in(&a);
-            a64_ret(&a);
-            /* native: TA = guest rip, TB = the native function (jit_native). */
-            native_stub = a64_here(&a);
-            sync_out(&a);
-            a64_str_uoff(&a, 3, TA, CPU, OFF(rip));
-            a64_stp_pre(&a, 29, 30, SP, -16);
-            a64_mov(&a, 1, 0, CPU);
-            a64_mov(&a, 1, 1, TB);
-            a64_mov_imm(&a, TA, (uint64_t)(uintptr_t)&jit_native);
-            a64_blr(&a, TA);
-            a64_ldp_post(&a, 29, 30, SP, 16);
-            sync_in(&a);
-            a64_ret(&a);
-            /* recomp: TA = the function's guest address, TB = the recompiled function (jit_recomp). */
-            recomp_stub = a64_here(&a);
-            sync_out(&a);
-            a64_str_uoff(&a, 3, TA, CPU, OFF(rip));
-            a64_stp_pre(&a, 29, 30, SP, -16);
-            a64_mov(&a, 1, 0, CPU);
-            a64_mov(&a, 1, 1, TB);
-            a64_mov_imm(&a, TA, (uint64_t)(uintptr_t)&jit_recomp);
-            a64_blr(&a, TA);
-            a64_ldp_post(&a, 29, 30, SP, 16);
-            sync_in(&a);
-            a64_ret(&a);
+            /* TA = guest rip, TB = the BbInsn */
+            fallback_stub = host_call_stub(&a, (const void *)&jit_fallback);
+            /* TA = guest rip, TB = the native function */
+            native_stub = host_call_stub(&a, (const void *)&jit_native);
+            /* TA = the function's guest address, TB = the recompiled function */
+            recomp_stub = host_call_stub(&a, (const void *)&jit_recomp);
+            /* TA = the probed address */
+            probe_stub = host_call_stub(&a, (const void *)&bbcpu_run_probe);
+            /* The guard marker's cache entry (bbcpu_jit_run sets it): the code jit_guard_return
+             * finds, else the dispatcher at the rip it set. */
+            guard_return_stub = a64_here(&a);
+            host_call(&a, (const void *)&jit_guard_return);
+            a64_cbz(&a, 1, 0, 2);
+            a64_br(&a, 0);
+            a64_b(&a, (int32_t)(exit_stub - a64_here(&a)));
             code_next = a64_here(&a);
             pthread_jit_write_protect_np(1);
             sys_icache_invalidate(code_base, (size_t)(code_next - code_base) * 4);
@@ -267,10 +286,6 @@ typedef struct {
     InstructionRange *fault_map;
     size_t fault_count;
 } Tx;
-
-/* Indirect branch cache, per thread (BbCpu): guest rip -> translated code. */
-enum { CACHE_BITS = 14 };
-struct BbJitCacheEntry { uint64_t rip; void *code; };
 
 /* A direct exit: a branch the dispatcher patches to the target's code once it has it
  * (block chaining); until then it goes to the slow path that returns to the dispatcher. */
@@ -2475,12 +2490,15 @@ static void *translate(BbBlock *block) {
     uint32_t *start = code_next;
     uint64_t rip = block->start;
     int ended = 0, translated = 0;
-    /* BB_RECORD, native and recompiled functions and probes (record.c, native.c, recomp.c): their
-     * first instruction goes through bbcpu_step. */
+    /* BB_RECORD, native and recompiled functions (record.c, native.c, recomp.c): their first
+     * instruction goes through bbcpu_step. A probed block runs its probes first. */
     const int recorded = (bbcpu_record_armed && bbcpu_record_target(block->start)) ||
                          (bbcpu_native_count && bbcpu_native_at(block->start)) ||
-                         (bbcpu_probe_count && bbcpu_probe_at(block->start)) ||
                          (bbcpu_recomp_count && bbcpu_recomp_at(block->start));
+    if (!recorded && bbcpu_probe_count && bbcpu_probe_at(block->start)) {
+        a64_mov_imm(&t.a, TA, block->start);
+        a64_bl(&t.a, (int32_t)(probe_stub - a64_here(&t.a)));
+    }
     for (uint32_t i = 0; i < block->count && !ended && !recorded; ++i) {
         const BbInsn *in = &block->insn[i];
         t.rip = rip;
@@ -2577,6 +2595,7 @@ int bbcpu_jit_run(BbCpu *cpu, uint64_t stop) {
             jit_to_x86(cpu);
             bbcpu_guard_return(cpu);
             x86_to_jit(cpu);
+            *cache_entry(cpu, BB_GUARD_RETURN) = (struct BbJitCacheEntry){BB_GUARD_RETURN, guard_return_stub};
             continue;
         }
         if (!bbcpu_is_guest_code(cpu->rip)) {
@@ -2600,9 +2619,7 @@ int bbcpu_jit_run(BbCpu *cpu, uint64_t stop) {
         if (!code && !block->jit_failed) code = translate(block);
         if (code) {
             if (cpu->jit_link && !deny_chain) link_exit((uint32_t *)(uintptr_t)cpu->jit_link, code);
-            struct BbJitCacheEntry *entry = &cpu->jit_cache[(cpu->rip >> 2) & ((1u << CACHE_BITS) - 1)];
-            entry->rip = cpu->rip;
-            entry->code = code;
+            *cache_entry(cpu, cpu->rip) = (struct BbJitCacheEntry){cpu->rip, code};
             cpu->jit_link = 0;
             enter(cpu, code);
         } else {
