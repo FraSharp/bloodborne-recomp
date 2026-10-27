@@ -1246,6 +1246,23 @@ static int vector2(Tx *t, const BbInsn *in) {
         vstore_reg(t, in, o.dst->reg, 0, 0, 1);
         return 1;
     }
+    case M(MOVLPS): case M(VMOVLPS): case M(MOVLPD): case M(VMOVLPD): case M(MOVHPS):
+    case M(VMOVHPS): case M(MOVHPD): case M(VMOVHPD): {
+        const int high = m == M(MOVHPS) || m == M(VMOVHPS) || m == M(MOVHPD) || m == M(VMOVHPD);
+        const BbOp *dst = &in->op[0];
+        if (dst->type == OP_MEM) {
+            if (!vreg(&in->op[1])) return 0;
+            a64_ins_elem(a, 8, 0, 0, XR(in->op[1].reg), high);
+            vstore_mem(t, in, dst, 8, 0, 0);
+            return 1;
+        }
+        if (!vreg(dst)) return 0;
+        vload(t, in, in->count == 3 ? &in->op[1] : dst, 16, 0, 0);
+        if (!vload(t, in, &in->op[in->count - 1], 8, 0, 1)) return 0;
+        a64_ins_elem(a, 8, 0, high, 1, 0);
+        vstore_reg(t, in, dst->reg, 0, 0, 1);
+        return 1;
+    }
     case M(MOVMSKPS): case M(VMOVMSKPS): case M(MOVMSKPD): case M(VMOVMSKPD): case M(PMOVMSKB): case M(VPMOVMSKB): {
         const BbOp *dst = &in->op[0], *src = &in->op[1];
         if (dst->type != OP_REG || dst->kind != RK_GPR || !vreg(src)) return 0;
