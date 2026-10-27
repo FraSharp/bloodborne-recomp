@@ -162,6 +162,23 @@ static void sync_in(A64 *a) {
     a64_ldr_uoff(a, 3, FAB, CPU, OFF(jf_ab));
 }
 
+/* A stub translated code calls (bl) to run fn(cpu, TB) in C with TA as the guest rip: the guest's
+ * registers are stored in the BbCpu around the call. */
+static uint32_t *host_call_stub(A64 *a, const void *fn) {
+    uint32_t *stub = a64_here(a);
+    sync_out(a);
+    a64_str_uoff(a, 3, TA, CPU, OFF(rip));
+    a64_stp_pre(a, 29, 30, SP, -16);
+    a64_mov(a, 1, 0, CPU);
+    a64_mov(a, 1, 1, TB);
+    a64_mov_imm(a, TA, (uint64_t)(uintptr_t)fn);
+    a64_blr(a, TA);
+    a64_ldp_post(a, 29, 30, SP, 16);
+    sync_in(a);
+    a64_ret(a);
+    return stub;
+}
+
 static int jit_init(void) {
     static int state; /* 0 unknown, 1 on, -1 off */
     if (state) return state > 0;
@@ -200,42 +217,12 @@ static int jit_init(void) {
             a64_ldp(&a, 27, 28, SP, 80);
             a64_ldp_post(&a, 29, 30, SP, 96);
             a64_ret(&a);
-            /* fallback: TA = guest rip, TB = the BbInsn; registers synced around jit_fallback. */
-            fallback_stub = a64_here(&a);
-            sync_out(&a);
-            a64_str_uoff(&a, 3, TA, CPU, OFF(rip));
-            a64_stp_pre(&a, 29, 30, SP, -16);
-            a64_mov(&a, 1, 0, CPU);
-            a64_mov(&a, 1, 1, TB);
-            a64_mov_imm(&a, TA, (uint64_t)(uintptr_t)&jit_fallback);
-            a64_blr(&a, TA);
-            a64_ldp_post(&a, 29, 30, SP, 16);
-            sync_in(&a);
-            a64_ret(&a);
-            /* native: TA = guest rip, TB = the native function (jit_native). */
-            native_stub = a64_here(&a);
-            sync_out(&a);
-            a64_str_uoff(&a, 3, TA, CPU, OFF(rip));
-            a64_stp_pre(&a, 29, 30, SP, -16);
-            a64_mov(&a, 1, 0, CPU);
-            a64_mov(&a, 1, 1, TB);
-            a64_mov_imm(&a, TA, (uint64_t)(uintptr_t)&jit_native);
-            a64_blr(&a, TA);
-            a64_ldp_post(&a, 29, 30, SP, 16);
-            sync_in(&a);
-            a64_ret(&a);
-            /* recomp: TA = the function's guest address, TB = the recompiled function (jit_recomp). */
-            recomp_stub = a64_here(&a);
-            sync_out(&a);
-            a64_str_uoff(&a, 3, TA, CPU, OFF(rip));
-            a64_stp_pre(&a, 29, 30, SP, -16);
-            a64_mov(&a, 1, 0, CPU);
-            a64_mov(&a, 1, 1, TB);
-            a64_mov_imm(&a, TA, (uint64_t)(uintptr_t)&jit_recomp);
-            a64_blr(&a, TA);
-            a64_ldp_post(&a, 29, 30, SP, 16);
-            sync_in(&a);
-            a64_ret(&a);
+            /* TA = guest rip, TB = the BbInsn */
+            fallback_stub = host_call_stub(&a, (const void *)&jit_fallback);
+            /* TA = guest rip, TB = the native function */
+            native_stub = host_call_stub(&a, (const void *)&jit_native);
+            /* TA = the function's guest address, TB = the recompiled function */
+            recomp_stub = host_call_stub(&a, (const void *)&jit_recomp);
             code_next = a64_here(&a);
             pthread_jit_write_protect_np(1);
             sys_icache_invalidate(code_base, (size_t)(code_next - code_base) * 4);
