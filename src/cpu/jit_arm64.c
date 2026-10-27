@@ -38,7 +38,7 @@ enum { T0 = 0, T1 = 1, T2 = 2, T3 = 3, T4 = 4, T5 = 5, TA = 16, TB = 17, FL = 8,
 enum { CODE_SIZE = 128 << 20 };
 static uint32_t *code_base, *code_end, *code_next;
 static uint32_t *enter_stub, *exit_stub, *fallback_stub, *native_stub, *recomp_stub, *probe_stub,
-                *guard_return_stub;
+                *guard_return_stub, *host_function_stub;
 static pthread_mutex_t jit_lock = PTHREAD_MUTEX_INITIALIZER;
 static uint64_t translated_blocks, fallback_insns;
 /* Translated blocks in code order (the buffer only grows), for fault reports. */
@@ -172,12 +172,24 @@ static struct BbJitCacheEntry *cache_entry(BbCpu *cpu, uint64_t rip) {
     return &cpu->jit_cache[(rip >> 2) & ((1u << CACHE_BITS) - 1)];
 }
 
+static void *cached_code(BbCpu *cpu) {
+    const struct BbJitCacheEntry *entry = cache_entry(cpu, cpu->rip);
+    return entry->rip == cpu->rip ? entry->code : NULL;
+}
+
 /* A guarded call's return reached from translated code through the marker's cache entry: the
  * guard's leave, then the translated code at the real return address if the cache has it. */
 static void *jit_guard_return(BbCpu *cpu) {
     bbcpu_guard_return(cpu);
-    const struct BbJitCacheEntry *entry = cache_entry(cpu, cpu->rip);
-    return entry->rip == cpu->rip ? entry->code : NULL;
+    return cached_code(cpu);
+}
+
+/* A host function reached from translated code through its cache entry (bbcpu_jit_run adds one
+ * once it called the function, so never for the return hook's frame addresses): the call, then
+ * the code at the return address if the cache has it. */
+static void *jit_host_function(BbCpu *cpu) {
+    bbcpu_call_host_at_rip(cpu);
+    return cached_code(cpu);
 }
 
 /* fn(cpu, TB) in C from translated code: the guest's registers are stored in the BbCpu around
@@ -191,6 +203,16 @@ static void host_call(A64 *a, const void *fn) {
     a64_blr(a, TA);
     a64_ldp_post(a, 29, 30, SP, 16);
     sync_in(a);
+}
+
+/* After a host_call that returned the code to continue at in x0, or NULL: that code, with TA the
+ * guest rip as an indirect exit leaves it (the code may be another host function's stub), else
+ * the dispatcher. */
+static void continue_at_result(A64 *a) {
+    a64_cbz(a, 1, 0, 3);
+    a64_ldr_uoff(a, 3, TA, CPU, OFF(rip));
+    a64_br(a, 0);
+    a64_b(a, (int32_t)(exit_stub - a64_here(a)));
 }
 
 /* A stub translated code calls (bl) to run fn(cpu, TB) with TA as the guest rip. */
@@ -252,9 +274,12 @@ static int jit_init(void) {
              * finds, else the dispatcher at the rip it set. */
             guard_return_stub = a64_here(&a);
             host_call(&a, (const void *)&jit_guard_return);
-            a64_cbz(&a, 1, 0, 2);
-            a64_br(&a, 0);
-            a64_b(&a, (int32_t)(exit_stub - a64_here(&a)));
+            continue_at_result(&a);
+            /* A host function's cache entry: TA = the function. */
+            host_function_stub = a64_here(&a);
+            a64_str_uoff(&a, 3, TA, CPU, OFF(rip));
+            host_call(&a, (const void *)&jit_host_function);
+            continue_at_result(&a);
             code_next = a64_here(&a);
             pthread_jit_write_protect_np(1);
             sys_icache_invalidate(code_base, (size_t)(code_next - code_base) * 4);
@@ -2500,8 +2525,10 @@ int bbcpu_jit_run(BbCpu *cpu, uint64_t stop) {
             cpu->jit_link = 0;
             jit_to_x86(cpu);
             if (bbcpu_return_hook) bbcpu_return_hook(cpu);
+            const uint64_t function = cpu->rip;
             bbcpu_call_host_at_rip(cpu);
             x86_to_jit(cpu);
+            *cache_entry(cpu, function) = (struct BbJitCacheEntry){function, host_function_stub};
             continue;
         }
         BbBlock *block = (BbBlock *)bbcpu_block(cpu->rip);

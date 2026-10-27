@@ -1,4 +1,4 @@
-/* Native functions, guards and probes reached from guest code (tools/cpu/test_jit.sh runs it
+/* Native functions, host functions, guards and probes reached from guest code (tools/cpu/test_jit.sh runs it
  * translated and interpreted): each runs once per call, with the guest's registers. */
 #include "../src/cpu/bbcpu.h"
 #include <assert.h>
@@ -15,7 +15,8 @@ void *runtime_low_map(size_t size, int prot) {
 
 enum { RAX = 0, RDI = 7 };
 enum { CALL_NATIVE = 0x000, CALL_GUARDED = 0x040, NATIVE = 0x100, GUARDED = 0x200, FALLS_INTO = 0x300,
-       PROBED = 0x305, PROBED_INTERPRETED = 0x340, GUARDED_TAIL = 0x380, CALLS = 1000 };
+       PROBED = 0x305, PROBED_INTERPRETED = 0x340, GUARDED_TAIL = 0x380, CALL_HOST = 0x400,
+       HOST_CHAIN = 0x480, CALLS = 1000 };
 
 static uint8_t *guest;
 
@@ -27,6 +28,20 @@ static void put_call(uint32_t at, uint32_t target) {
 }
 
 static uint64_t native_function(uint64_t a) { return a * 3; }
+
+static uint64_t host_calls, host_arguments;
+static uint64_t host_function(uint64_t a) {
+    ++host_calls;
+    host_arguments += a;
+    return a * 2 + 1;
+}
+
+static uint64_t chain_first_calls, chain_second_calls;
+static void chain_first(void) { ++chain_first_calls; }
+static uint64_t chain_second(void) {
+    assert(chain_first_calls == chain_second_calls + 1);
+    return ++chain_second_calls;
+}
 
 static uint64_t guard_enters, guard_leaves, guard_arguments;
 static uint64_t guard_enter(const uint64_t regs[16], uint32_t tag) {
@@ -86,6 +101,19 @@ int main(void) {
     /* GUARDED_TAIL: jmp GUARDED (both guarded calls return at once) */
     put_call(GUARDED_TAIL, GUARDED);
     guest[GUARDED_TAIL] = 0xe9;
+    /* mov ebx, edi; loop: mov edi, ebx; mov rax, host_function; call rax; dec ebx; jnz loop; ret */
+    const uint64_t host = (uintptr_t)&host_function;
+    put(CALL_HOST, (const uint8_t[]){0x89, 0xfb, 0x89, 0xdf, 0x48, 0xb8}, 6);
+    put(CALL_HOST + 6, (const uint8_t *)&host, 8);
+    put(CALL_HOST + 14, (const uint8_t[]){0xff, 0xd0, 0xff, 0xcb, 0x75, 0xee, 0xc3}, 7);
+    /* HOST_CHAIN: mov rax, chain_second; push rax; mov rax, chain_first; jmp rax (chain_first
+     * returns into chain_second, which returns to the caller) */
+    const uint64_t first = (uintptr_t)&chain_first, second = (uintptr_t)&chain_second;
+    put(HOST_CHAIN, (const uint8_t[]){0x48, 0xb8}, 2);
+    put(HOST_CHAIN + 2, (const uint8_t *)&second, 8);
+    put(HOST_CHAIN + 10, (const uint8_t[]){0x50, 0x48, 0xb8}, 3);
+    put(HOST_CHAIN + 13, (const uint8_t *)&first, 8);
+    put(HOST_CHAIN + 21, (const uint8_t[]){0xff, 0xe0}, 2);
 
     const uintptr_t base = (uintptr_t)guest;
     bbcpu_add_guest_code(base, 4096);
@@ -109,6 +137,10 @@ int main(void) {
         assert(guard_leaves == CALLS + 1 + i && inner_leaves_at_tail_leave == guard_leaves);
     }
 
+    assert(bbcpu_call(base + CALL_HOST, 1, &calls) == 3);
+    assert(host_calls == CALLS && host_arguments == (uint64_t)CALLS * (CALLS + 1) / 2);
+    for (uint64_t i = 1; i <= 3; ++i) assert(bbcpu_call(base + HOST_CHAIN, 0, NULL) == i);
+
     for (int i = 1; i <= 3; ++i) {
         assert(bbcpu_call(base + FALLS_INTO, 0, NULL) == 7);
         assert(probe_hits == (uint64_t)i && probe_rax == 5);
@@ -119,6 +151,6 @@ int main(void) {
         assert(bbcpu_call(base + PROBED_INTERPRETED, 0, NULL) == 9);
         assert(interpreted_probe_hits == i);
     }
-    puts("PASS: native functions, guards and probes");
+    puts("PASS: native functions, host functions, guards and probes");
     return 0;
 }
