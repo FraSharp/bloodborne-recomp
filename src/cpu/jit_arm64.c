@@ -1279,6 +1279,22 @@ static int vector2(Tx *t, const BbInsn *in) {
         vstore_reg(t, in, o.dst->reg, 0, 0, 1);
         return 1;
     }
+    case M(PALIGNR): case M(VPALIGNR): {
+        /* Per 128-bit lane: 16 bytes of s1:s2 (s2 low) from byte `shift`, zeros past the end */
+        const VOps o = vops3(in);
+        if (!vreg(o.dst) || !o.imm) return 0;
+        const int shift = (int)o.imm->disp & 0xff;
+        for (int h = 0; h <= wide; ++h) {
+            if (!vload(t, in, o.s1, 16, h, 0) || !vload(t, in, o.s2, 16, h, 1)) return 0;
+            if (shift < 16) a64_ext(a, 2, 1, 0, shift);
+            else if (shift < 32) {
+                a64_movi_16b(a, 1, 0);
+                a64_ext(a, 2, 0, 1, shift - 16);
+            } else a64_movi_16b(a, 2, 0);
+            vstore_reg(t, in, o.dst->reg, 2, h, !wide);
+        }
+        return 1;
+    }
     case M(MOVLPS): case M(VMOVLPS): case M(MOVLPD): case M(VMOVLPD): case M(MOVHPS):
     case M(VMOVHPS): case M(MOVHPD): case M(VMOVHPD): {
         const int high = m == M(MOVHPS) || m == M(VMOVHPS) || m == M(MOVHPD) || m == M(VMOVHPD);
