@@ -1820,6 +1820,47 @@ static int shift_small(Tx *t, const BbInsn *in, int flags_live) {
     return 1;
 }
 
+/* rol/ror by an immediate or cl: only CF and OF change, and nothing for a masked count of 0. 8 and
+ * 16-bit operands are repeated across 32 bits, so a 32-bit rotation rotates each copy. */
+static int rotate(Tx *t, const BbInsn *in, int flags_live) {
+    A64 *a = &t->a;
+    const BbOp *dst = &in->op[0];
+    const int size = dst->size, bits = size * 8, sf = size == 8, left = in->mnemonic == M(ROL);
+    const int by_cl = in->count > 1 && in->op[1].type == OP_REG;
+    if (by_cl && (in->op[1].reg != RCX || in->op[1].high8)) return 0;
+    if (!by_cl && in->count > 1 && in->op[1].type != OP_IMM) return 0;
+    uint32_t *skip = NULL;
+    if (by_cl) {
+        a64_logic_imm(a, 0, 0, T5, G[RCX], 0, sf ? 6 : 5);
+        skip = a64_here(a);
+        a64_cbz(a, 0, T5, 0);
+    } else {
+        const unsigned count = (in->count > 1 ? (unsigned)in->op[1].disp : 1) & (sf ? 63 : 31);
+        if (!count) return 1;
+        a64_movz(a, 0, T5, (uint16_t)count, 0);
+    }
+    int v = read_op(t, in, dst, size, T0, NULL);
+    if (size < 4) {
+        a64_logic(a, 1, 0, 0, T1, v, v, 0, bits);
+        if (size == 1) a64_logic(a, 1, 0, 0, T1, T1, T1, 0, 16);
+        v = T1;
+    }
+    if (left) a64_sub(a, 0, T5, XZR, T5); /* rorv takes the count modulo the width */
+    a64_shiftv(a, 3, sf, T2, v, T5);
+    if (flags_live) {
+        /* rol: CF = LSB(r), OF = MSB(r) ^ CF; ror: CF = MSB(r), OF = CF ^ bit bits - 2 of r */
+        a64_ubfx(a, 1, T3, T2, left ? 0 : bits - 1, 1);
+        a64_ubfx(a, 1, T4, T2, left ? bits - 1 : bits - 2, 1);
+        a64_eor(a, 1, T4, T4, T3);
+        a64_eor_bit(a, T3, T3, 0);
+        a64_bfi(a, 1, FL, T3, 29, 1); /* C = !CF */
+        a64_bfi(a, 1, FL, T4, 28, 1);
+    }
+    write_op(t, in, dst, size, T2);
+    if (skip) a64_patch_bcond(skip, a64_here(a));
+    return 1;
+}
+
 /* rdtsc: the guest's 1.6 GHz counter from the virtual counter, as bbcpu_tsc computes it. */
 static int read_tsc(Tx *t) {
     A64 *a = &t->a;
@@ -2074,6 +2115,9 @@ static int translate_insn(Tx *t, const BbInsn *in, int flags_live, int *handled)
         } else if (shift_imm(t, in, flags_live)) {
             return 0;
         }
+        break;
+    case M(ROL): case M(ROR):
+        if (rotate(t, in, flags_live)) return 0;
         break;
     case M(BT):
         if (bit_test(t, in)) return 0;
