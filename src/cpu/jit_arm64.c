@@ -992,6 +992,39 @@ static int vector(Tx *t, const BbInsn *in, int flags_live) {
         a64_bfi(a, 1, FL, TB, 28, 4);
         return 1;
     }
+    case M(PTEST): case M(VPTEST): {
+        /* ZF: a & b is zero; CF: b & ~a (b ^ (a & b)) is zero; the other flags clear */
+        if (!vreg(&in->op[0])) return 0;
+        for (int h = 0; h <= wide; ++h) {
+            if (!vload(t, in, &in->op[0], 16, h, 0) || !vload(t, in, &in->op[1], 16, h, 1)) return 0;
+            if (h) {
+                a64_vlogic(a, 0, 0, 0, 1);
+                a64_vlogic(a, 2, 1, 1, 0);
+                a64_vlogic(a, 1, 2, 2, 0);
+                a64_vlogic(a, 1, 3, 3, 1);
+            } else {
+                a64_vlogic(a, 0, 2, 0, 1);
+                a64_vlogic(a, 2, 3, 1, 2);
+            }
+        }
+        if (!flags_live) return 1;
+        a64_umov(a, 8, T0, 2, 0);
+        a64_umov(a, 8, T1, 2, 1);
+        a64_orr(a, 1, T0, T0, T1);
+        a64_umov(a, 8, T2, 3, 0);
+        a64_umov(a, 8, T3, 3, 1);
+        a64_orr(a, 1, T2, T2, T3);
+        a64_subs(a, 1, XZR, T0, XZR);
+        a64_cset(a, 1, T4, CC_EQ);
+        a64_subs(a, 1, XZR, T2, XZR);
+        a64_cset(a, 1, T5, CC_NE);
+        a64_logic(a, 1, 0, 1, TB, T5, T4, 0, 1); /* N Z C V = 0 ZF !CF 0 */
+        a64_lsl_imm(a, 1, TB, TB, 1);
+        a64_bfi(a, 1, FL, TB, 28, 4);
+        a64_movz(a, 1, FRES, 1, 0); /* PF = 0 */
+        a64_mov(a, 1, FAB, FRES);   /* AF = 0 */
+        return 1;
+    }
     case M(CVTSI2SS): case M(VCVTSI2SS): case M(CVTSI2SD): case M(VCVTSI2SD): {
         const int dbl = m == M(CVTSI2SD) || m == M(VCVTSI2SD);
         const VOps o = vops3(in);
