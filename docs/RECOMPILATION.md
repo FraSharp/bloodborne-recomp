@@ -51,19 +51,19 @@ The recompiled code is produced on the player's machine from their copy, and sta
 
 ## Progress
 
-*2026-10-25.* The game's executable has 241,821 functions, about 11.3 million instructions.
+*2026-10-27.* The game's executable has 241,821 functions, about 11.3 million instructions.
 
 | | Progress | |
 |---|---|---|
-| Functions recompiled, running in the game | `████████████████████` 99.6% | 240,973 of 241,821 |
-| Instructions recompiled | `███████████████████░` 95.3% | 10,743,599 of 11,268,132 |
-| Instructions in plain C (of those recompiled) | `████████████████████` 99.1% | 10,641,693 of 10,743,599 |
-| CPU time recompiled, against the translator | `█████████████████░░░` 86% | 344% of one core against 402% (1st Floor Sickroom), 357% against 392% (Cathedral Ward) |
+| Functions recompiled, running in the game | `████████████████████` 99.7% | 240,978 of 241,821 |
+| Instructions recompiled | `███████████████████░` 96.4% | 10,861,735 of 11,268,132 |
+| Instructions in plain C (of those recompiled) | `████████████████████` 99.1% | 10,761,111 of 10,861,735 |
+| CPU time recompiled, against the translator | `█████████████████░░░` 86% | 344% of one core against 402% (1st Floor Sickroom), 360% against 397% (Cathedral Ward, 2026-10-27) |
 | Functions checked call by call (recordings) | `░░░░░░░░░░░░░░░░░░░░` 0.4% | 933 of 241,821 |
 | Functions labelled by library (2026-10-24) | `█████████████░░░░░░░` 62.7% | 151,562 of 241,821 |
 
 Every function is generated; the ones left to the translator are the 660 import stubs, the 130
-functions that call `setjmp`, and 58 that the game's patches (56) or the runtime's live switches
+functions that call `setjmp`, and 53 that the game's patches (51) or the runtime's live switches
 (2) change. Instructions recompiled count what control flow reaches; the rest is padding and code
 nothing reaches. Every recompiled function can run in the game; the call-by-call checks cover the
 busiest, and the fuzzing covers every instruction form the generator handles.
@@ -93,8 +93,15 @@ again only the files whose C changed:
   compares, shifts, shuffles, packs, unpacks and rounding, each as the interpreter does
   it. A division that faults runs in the interpreter, as does anything else, one instruction at a
   time, so the output is complete from the start.
-- An indirect jump to an unknown place goes back to the translator; a jump out of the function is
-  a tail call.
+- Jump tables become a `switch` over their cases: the compilers' forms with the bound checked by
+  `ja` to the default or `jbe` to the table, up to 32 instructions before the jump, and an index
+  copied before or after the check. Any other indirect jump to an unknown place goes back to the
+  translator; a jump out of the function is a tail call.
+- Decoding follows the code from the entry and stops after calls that never return
+  (`__stack_chk_fail`, `abort`, `exit`, `_exit`), so the data after them (often a jump table) is
+  not taken for code. Where instructions decoded from different starting points still overlap, an
+  instruction continues with an explicit jump to where it really goes on, never into its
+  neighbour in address order (`BB_RECOMP_OVERLAPS=1` lists such functions).
 - Left to the translator: the import stubs (one jump each to the PS4 libraries) and the functions
   that call `setjmp` (its return point must be guest code that can be resumed).
 - A call the runtime runs in the translator gets a return address of its own; when a `longjmp` or

@@ -65,7 +65,7 @@ C changed are compiled again.
 
 ## Where it stands and what is next
 
-- R2 done: all 241,031 functions generated (99.1% of instructions in C), 240,973 run in the game.
+- R2 done: all 241,031 functions generated (99.1% of instructions in C), 240,978 run in the game.
   Same frame rate and **less CPU time than the translator** since vector registers moved to
   locals, `rc_call` lost its TLS reads and calls copy only the registers that need it (`ps -o
   cputime=` over 30 s, 2026-10-25: 344% of one core against 402% at the 1st Floor Sickroom lamp,

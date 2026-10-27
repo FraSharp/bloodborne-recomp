@@ -22,7 +22,7 @@ functions against the original. Nothing here depends on an operating system: pro
 
 The game's executable has 241,821 functions. Every one the library can hold is generated
 (241,031: the 660 import stubs and 130 `setjmp` callers stay with the translator), 99.1% of their
-instructions in plain C, and the game runs on them (240,973; functions changed by patches and
+instructions in plain C, and the game runs on them (240,978; functions changed by patches and
 hooks stay with the translator). R3 (speed) is done: the recompiled code takes less CPU time
 than the translator (344% of one core against 402% at the 1st Floor Sickroom lamp, 357% against
 392% in Cathedral Ward, 2026-10-25), at the same frame rate. See [docs/RECOMPILATION.md](docs/RECOMPILATION.md)
