@@ -356,6 +356,13 @@ each, 2026-10-25), and were left out:
 | Vector accesses as two 8-byte `ldapr`/`stlr` instead of a barrier | 400% | 348% | +4.6% |
 | `ldapur`/`stlur`, the ordered accesses with their offset (`-mcpu=apple-m2`) | 397% | 341% | −3% |
 
+Also without a measurable gain (2026-10-27, Cathedral Ward, two alternating rounds against the
+ordered library): plain accesses for a thread's private stack slots (push, pop, `leave`, `ret`
+and the return addresses calls store; 570,290 loads and 818,811 stores in the library, which
+shrank from 55 to 35 MB): 345% and 352% against 350% and 346%, at 37.5–38.9 FPS. The 33 points
+of ordering are not in those slots. Plants flickered in one of its two runs (the open vegetation
+bug or this change: not told apart), another reason to leave it out.
+
 The cache took 7.8 of 11.4 million calls a second off `rc_call`: what `rc_call` costs is its
 indirect jump, not the lookup. The M1 target has no `ldapur`/`stlur`.
 
