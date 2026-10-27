@@ -212,16 +212,28 @@ static int call_import(BbCpu *cpu, uint64_t target) {
     return 1;
 }
 
+/* A native version of a game function (native.c), the same way: no translator in between (the
+ * game's mutex on iOS, about 130,000 calls a second in play). 1: done, as for call_import. */
+static int call_native(BbCpu *cpu, uint64_t target) {
+    if (!bbcpu_native_count || bbcpu_record_armed) return 0;
+    const void *fn = bbcpu_native_at(target);
+    if (!fn) return 0;
+    __atomic_add_fetch(&bbcpu_native_calls, 1, __ATOMIC_RELAXED);
+    cpu->rip = (uint64_t)(uintptr_t)fn;
+    bbcpu_call_host_at_rip(cpu);
+    return 1;
+}
+
 /* The rest of rc_call and rc_tail, out of line: their recompiled path then needs no stack frame. */
 static __attribute__((noinline)) void call_other(BbCpu *cpu, uint64_t target, uint64_t next) {
-    if (call_import(cpu, target)) return;
+    if (call_import(cpu, target) || call_native(cpu, target)) return;
     /* The translator (and natives, imports: bbcpu_run calls them). */
     cpu->rip = target;
     run_translated(cpu, cpu->r[RSP]);
     cpu->rip = next;
 }
 static __attribute__((noinline)) void tail_other(BbCpu *cpu) {
-    if (call_import(cpu, cpu->rip)) return; /* a tail call of an import: it returns for us */
+    if (call_import(cpu, cpu->rip) || call_native(cpu, cpu->rip)) return; /* it returns for us */
     const uint64_t back = bb_load(cpu->r[RSP], 8);
     run_translated(cpu, cpu->r[RSP]);
     cpu->rip = back;
