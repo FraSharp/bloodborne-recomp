@@ -242,6 +242,19 @@ static int by_offset(const void *a, const void *b);
 static int is_recompiled(uint64_t t) {
     return recompiled && bsearch(&t, recompiled, function_count, sizeof(*recompiled), by_offset) != NULL;
 }
+/* A call of an import that never returns: nothing after it is this call's fall-through (a
+ * function can end with one, data such as a jump table right after it). */
+static int no_return(uint64_t off, const BbInsn *in) {
+    if (in->mnemonic != M(CALL) || in->op[0].type != OP_IMM) return 0;
+    const char *name = import_name(off + (uint64_t)in->op[0].disp);
+    return name && (!strcmp(name, "__stack_chk_fail") || !strcmp(name, "abort") || !strcmp(name, "exit") ||
+                    !strcmp(name, "_exit"));
+}
+/* Whether execution can go on to the instruction after this one. */
+static int falls_through(uint64_t off, const BbInsn *in) {
+    const int m = in->mnemonic;
+    return !(m == M(JMP) || m == M(RET) || m == M(INVALID) || m == M(UD2) || m == M(HLT) || no_return(off, in));
+}
 
 /* A jump to image offset `t`: a goto inside the function. Out of it: a tail call when the stack is
  * back at the entry (the return address on top), else code of this function elsewhere (a part the
@@ -1425,7 +1438,8 @@ static int computed_jump;
 static size_t table_target_count, table_target_capacity;
 
 /* A compiler's jump table ending at list[n - 1] (jmp reg): lea T, [rip + table]; movsxd C,
- * dword [T + 4 * I]; add C, T; jmp C, its size from cmp I, N; ja (N + 1 entries). Its targets
+ * dword [T + 4 * I]; add C, T; jmp C, its size from cmp I, N; ja (N + 1 entries; or jbe to the
+ * table, the default case falling through). Its targets
  * are pushed to `work` and kept in table_targets; 0 if it is not one. */
 static int jump_table(Function fn, const Insn *list, size_t n, uint64_t *work, size_t *pending, const uint8_t *seen) {
     if (n < 4) return 0;
@@ -1439,19 +1453,20 @@ static int jump_table(Function fn, const Insn *list, size_t n, uint64_t *work, s
         load->op[1].base != t || load->op[1].scale != 4 || load->op[1].index == 0xff || load->op[1].disp != 0) return 0;
     const int index = load->op[1].index;
     uint64_t table = 0, entries = 0;
-    for (size_t k = n - 3; k-- > 0 && k + 12 > n;) {
+    for (size_t k = n - 3; k-- > 0 && k + 32 > n;) { /* the nearest; the default case can sit between */
         const Insn *x = &list[k];
         if (!table && x->in.mnemonic == M(LEA) && x->in.op[0].type == OP_REG && x->in.op[0].reg == t &&
             x->in.op[1].base == 0xfe && x->in.op[1].index == 0xff)
             table = x->off + x->in.length + (uint64_t)x->in.op[1].disp;
         if (!entries && x->in.mnemonic == M(CMP) && x->in.op[0].type == OP_REG && x->in.op[0].reg == index &&
-            x->in.op[1].type == OP_IMM && k + 1 < n && list[k + 1].in.mnemonic == M(JNBE))
+            x->in.op[1].type == OP_IMM && k + 1 < n &&
+            (list[k + 1].in.mnemonic == M(JNBE) || list[k + 1].in.mnemonic == M(JBE)))
             entries = (uint64_t)x->in.op[1].disp + 1;
     }
     /* Also: cmp R, N, then flag-free moves (the index copied from R: mov I, R), then ja
      * (clang interleaves the stores of the case's common code). */
-    for (size_t k = n - 3; !entries && k-- > 0 && k + 16 > n;) {
-        if (list[k].in.mnemonic != M(JNBE)) continue;
+    for (size_t k = n - 3; !entries && k-- > 0 && k + 32 > n;) {
+        if (list[k].in.mnemonic != M(JNBE) && list[k].in.mnemonic != M(JBE)) continue;
         int from = -1; /* the register the bound applies to */
         for (size_t j = k; j-- > 0 && j + 8 > k;) {
             const BbInsn *x = &list[j].in;
@@ -1469,9 +1484,9 @@ static int jump_table(Function fn, const Insn *list, size_t n, uint64_t *work, s
             if (x->mnemonic == M(MOV) && x->op[0].type == OP_REG && x->op[0].reg == index && x->op[1].type == OP_REG &&
                 x->op[1].reg == from) ok = 1;
         }
-        for (size_t j = k; !ok && j-- > 0 && j + 8 > k;) {
+        for (size_t j = k; !ok && j-- > 0 && j + 8 > k;) { /* or just before it: mov I, R; cmp R, N */
             const BbInsn *x = &list[j].in;
-            if (x->mnemonic == M(CMP)) break;
+            if (x->mnemonic == M(CMP)) continue;
             if (x->mnemonic == M(MOV) && x->op[0].type == OP_REG && x->op[0].reg == index && x->op[1].type == OP_REG &&
                 x->op[1].reg == from) ok = 1;
         }
@@ -1529,7 +1544,7 @@ static Insn *decode(Function fn, size_t *count) {
                     !(pending + 4096 < work_capacity && jump_table(fn, list, n, work, &pending, seen)))
                     computed_jump = 1;
                 /* No fall-through after these. */
-                if (m == M(JMP) || m == M(RET) || m == M(INVALID) || m == M(UD2) || m == M(HLT)) ended = 2;
+                if (!falls_through(off, in)) ended = 2;
                 off += in->length;
             }
             if (ended == 2) break;
@@ -1538,6 +1553,12 @@ static Insn *decode(Function fn, size_t *count) {
     free(work);
     free(seen);
     qsort(list, n, sizeof(*list), insn_order);
+    if (getenv("BB_RECOMP_OVERLAPS"))
+        for (size_t i = 0; i + 1 < n; ++i)
+            if (list[i].off + list[i].in.length > list[i + 1].off) {
+                fprintf(stderr, "overlap %#llx at %#llx\n", (unsigned long long)fn.offset, (unsigned long long)list[i + 1].off);
+                break;
+            }
     *count = n;
     return list;
 }
@@ -1725,6 +1746,15 @@ static int sync_kill(const BbInsn *in) {
     return m == M(POP) && d->size == 8 ? d->reg : -1;
 }
 
+/* Where instruction i goes on to: 0 the next one in address order (or past the function's end), 1
+ * another decoded instruction (a label), 2 an address not decoded (the dispatcher), -1 nowhere. */
+static int falls_to(const Insn *list, size_t count, size_t i, Range f) {
+    if (!falls_through(list[i].off, &list[i].in)) return -1;
+    const uint64_t next = list[i].off + list[i].in.length;
+    if (i + 1 < count ? list[i + 1].off == next : next == f.end) return 0;
+    return bsearch(&next, list, count, sizeof(*list), by_offset) ? 1 : 2;
+}
+
 static void generate(Function fn, uint64_t *stats) {
     size_t count;
     Insn *list = decode(fn, &count);
@@ -1741,6 +1771,11 @@ static void generate(Function fn, uint64_t *stats) {
         for (size_t i = 0; i < count; ++i) targets[target_count++] = list[i].off;
     }
     for (size_t i = 0; i < table_target_count; ++i) targets[target_count++] = table_targets[i]; /* jump tables */
+    /* Instructions decoded from different starting points can overlap (data decoded as code after
+     * a jump table, a branch into the middle of an instruction): the instruction after one in
+     * address order is then not where it continues, so it gets an explicit jump (falls_to). */
+    for (size_t i = 0; i < count; ++i)
+        if (falls_to(list, count, i, f) == 1) targets[target_count++] = list[i].off + list[i].in.length;
     for (size_t i = 0; i < count; ++i) {
         const BbInsn *in = &list[i].in;
         const int cc = cc_of(in->mnemonic);
@@ -1779,11 +1814,15 @@ static void generate(Function fn, uint64_t *stats) {
         const long mark = ftell(out);
         if (translate(f, x->off, &x->in, stats)) {
             ++stats[0];
-            continue;
+        } else {
+            fseek(out, mark, SEEK_SET); /* what a translation wrote before it gave up */
+            emit_interp(x->off, &x->in, 0);
+            emit("\n");
         }
-        fseek(out, mark, SEEK_SET); /* what a translation wrote before it gave up */
-        emit_interp(x->off, &x->in, 0);
-        emit("\n");
+        const uint64_t next = x->off + x->in.length;
+        const int to = falls_to(list, count, i, f);
+        if (to == 1) emit("goto L_%" PRIx64 "; /* not the next one in address order */\n", next);
+        else if (to == 2) emit("{ dn = B + 0x%" PRIx64 "ull; goto L_dispatch; }\n", next);
     }
     starts[count] = ftell(out) - body;
     char *text = malloc((size_t)starts[count] + 1);
