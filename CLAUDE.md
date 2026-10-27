@@ -104,8 +104,11 @@ C changed are compiled again.
 - R5 (the native renderer) is planned and worked on in bloodborne-runtime
   (`docs/NATIVE_RENDERER.md`). Its part here: calls of hooked functions (bbcpu guards, natives)
   from recompiled code must go through the runtime, not directly to the recompiled callee.
-- Next: more routes (other areas, bosses), names for known library code (zlib, Lua) and
-  the game's imports in the generated C (R4), recompiling at install time from the launcher.
+- Next (maintainer, 2026-10-27; the app's `docs/ROADMAP.md` section 8): building the library at
+  install time from the launcher, with a downloaded LLVM toolchain and freestanding flags (no
+  macOS SDK); then R4 aimed at the engine's render boundary (for N6), its synchronization
+  primitives and the hottest signatures; alongside, in the generator: flags only where read, a
+  function's own frame as host locals, ordering kept only for the engine's synchronization.
 
 ## Working rules (all four repositories)
 
