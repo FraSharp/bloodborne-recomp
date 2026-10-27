@@ -946,10 +946,9 @@ uint64_t bbcpu_step(BbCpu *cpu, const BbInsn *in) {
     return bbcpu_step_insn(cpu, in);
 }
 
-/* An instruction after a block's first: no function starts there (decode.c ends blocks before
- * native and recompiled functions), so only probes and recording are checked. */
+/* An instruction after a block's first: no native or recompiled function and no probe starts
+ * there (decode.c ends blocks before them), so only recording is checked. */
 static uint64_t step_inside(BbCpu *cpu, const BbInsn *in) {
-    if (__builtin_expect(bbcpu_probe_count, 0)) bbcpu_run_probe(cpu);
     if (__builtin_expect(bbcpu_record_armed, 0) && bbcpu_record_wants(cpu->rip))
         return bbcpu_record_call(cpu);
     return bbcpu_step_insn(cpu, in);
