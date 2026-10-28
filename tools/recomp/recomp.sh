@@ -16,7 +16,8 @@ clang -arch arm64 -O1 -g -std=gnu11 -Wall -I$D/include tools/recomp/bbrecomp.c s
     $D/lib/libZycore.a -o out/recomp/bbrecomp
 # Generated into $G/new; only files whose C changed are compiled again (OPT: clang's -O level).
 rm -rf out/recomp/gen/new; mkdir -p "$G/new"
-BB_JIT=0 out/recomp/bbrecomp out/eboot.elf out/recomp/functions.tsv "$G/new/recomp.c" "${offsets[@]}"
+# The project's names for functions, in comments (annotations/functions.tsv).
+BB_JIT=0 BB_RECOMP_ANNOTATIONS=${BB_RECOMP_ANNOTATIONS-annotations/functions.tsv} out/recomp/bbrecomp out/eboot.elf out/recomp/functions.tsv "$G/new/recomp.c" "${offsets[@]}"
 for f in "$G"/recomp*.c; do [[ -e $f ]] && [[ ! -e $G/new/$(basename "$f") ]] && rm -f "$f" "$f.o"; done
 changed=()
 for f in "$G"/new/recomp*.c; do

@@ -46,7 +46,7 @@ The recompiled code is produced on the player's machine from their copy, and sta
 | R1 | Recompiler prototype: generated C for the recorded functions, checked by replay | Done |
 | R2 | Coverage: every function generated; the game runs recompiled, the translator as fallback | Done |
 | R3 | Speed: integer, flags and vector instructions in C; memory ordering relaxed where safe | Done: 99.1% of instructions in C; the library takes 14% less CPU time than the translator at the same frame rate |
-| R4 | Annotations: names, signatures and structs make the generated C readable | |
+| R4 | Annotations: names, signatures and structs make the generated C readable; the engine's render functions first, for the native renderer's N6 | Started: the annotation file and the generator's use of it; libGnm's command buffer methods named |
 | R5 | The engine's graphics on each platform's own GPU API: [native renderer](https://github.com/bloodborne-native/bloodborne-runtime/blob/main/docs/NATIVE_RENDERER.md) (bloodborne-runtime) | N1 and N4 done; N5 (Metal backend): the default renderer on macOS, acceptance pending |
 
 ## Progress
@@ -61,6 +61,7 @@ The recompiled code is produced on the player's machine from their copy, and sta
 | CPU time recompiled, against the translator | `█████████████████░░░` 86% | 344% of one core against 402% (1st Floor Sickroom), 360% against 397% (Cathedral Ward, 2026-10-27) |
 | Functions checked call by call (recordings) | `░░░░░░░░░░░░░░░░░░░░` 0.4% | 933 of 241,821 |
 | Functions labelled by library (2026-10-24) | `█████████████░░░░░░░` 62.7% | 151,562 of 241,821 |
+| Functions named (R4, 2026-10-28) | `░░░░░░░░░░░░░░░░░░░░` 0.03% | 80 of 241,821 (libGnm's command buffer methods) |
 
 Every function is generated; the ones left to the translator are the 660 import stubs, the 130
 functions that call `setjmp`, and 53 that the game's patches (51) or the runtime's live switches
@@ -172,6 +173,7 @@ All write to `out/recomp/`.
 | `tools/recomp/scan.c` | Every function: the unwind tables (exact start and size), then what calls, jumps and code pointers reach (decoded by following control flow); `functions.tsv`, `calls.tsv`, `slots.tsv`, `strings.tsv` |
 | `tools/recomp/pointers.py` | The code addresses relocations put into data (`pointers.txt`), for `scan.c`, and where each is stored (`pointer_slots.tsv`), for `label.py` |
 | `tools/recomp/imports.py` | The import stubs by name (`imports.tsv`) |
+| `annotations/functions.tsv` | The project's names for functions (below, "Annotations"); `bbrecomp` writes them into the generated C |
 | `tools/recomp/label.py` | The library of each function (`modules.tsv`), from source paths and messages, spread to neighbours, vtables, callers and callees (`--check`: their agreement) |
 | `tools/recomp/profile.py` | CPU time per function and library from a macOS `sample` (`profile.tsv`) |
 | `tools/recomp/inspect.sh` | Ghidra's view of chosen functions (`c/<offset>.c`, `.s`), for analysis and annotations |
@@ -243,6 +245,26 @@ python3 tools/recomp/build_library.py --game "$GAME" --work WORK --toolchain LLV
   the executable or this repository's version changed. `library.json` beside the library records
   both (and the compiler, the time and the size); the launcher uses the library only while they
   match.
+
+## Annotations
+
+R4 gives the game's functions names, signatures and the layouts of the objects they use, the
+render functions of the engine first: the native renderer's N6 takes the engine's draws at that
+boundary instead of decoding the PS4's command buffers.
+
+`annotations/functions.tsv` holds one row per named function: its offset in the 1.09
+executable, the project's name for it (`Namespace::Class::method`, `#variant` for a second copy
+of one method), `sure` or `guess`, and the evidence (`pm4`: a libGnm function, named from the
+packets it writes, as `gpu/shim/bbport_gnm_table.inc` in bloodborne-runtime does). The names are
+the project's work, not the game's: no decompiled code goes into the file or its evidence.
+
+`bbrecomp` reads the file named by `BB_RECOMP_ANNOTATIONS` (`recomp.sh` and `build_library.py` set
+it; the app's kit carries the file) and writes each name after the function's offset and at every
+call of it, `?` after a guess. The names change comments only: the full library's C, comments and
+spaces removed, is the same with and without them. `build_library.py` generates the C again when
+the file changes.
+
+So far: libGnm's command buffer methods (80, 15 of them guesses), from the runtime's table.
 
 ## Record and replay
 

@@ -16,6 +16,7 @@ library the game loads (`BB_RECOMP_LIB`, in bloodborne-runtime). Plan, milestone
 - `tools/recomp/`: `scan.c` (function table: unwind tables + calls, jumps, lea, relocation
   pointers), `bbrecomp.c` (the generator), `recomp.sh`, `replay.c`/`replay.sh`, `fuzz.sh`,
   `ps4elf.py`, `pointers.py`, `imports.py`, `profile.py`, `label.py`, `inspect.sh` (Ghidra).
+- `annotations/functions.tsv`: the project's names for the game's functions (R4).
 - `tests/`: fuzzers and CPU tests. `out/` and `deps/` are not tracked.
 
 ## Build and check
@@ -104,12 +105,15 @@ C changed are compiled again.
 - R5 (the native renderer) is planned and worked on in bloodborne-runtime
   (`docs/NATIVE_RENDERER.md`). Its part here: calls of hooked functions (bbcpu guards, natives)
   from recompiled code must go through the runtime, not directly to the recompiled callee.
-- Next (maintainer, 2026-10-27; the app's `docs/ROADMAP.md` section 8): building the library at
-  install time from the launcher, with a downloaded LLVM toolchain and no macOS SDK
-  (`build_library.py`, `toolchain.sh`; RECOMPILATION.md, "Building the library without Xcode";
-  not `-ffreestanding`: 32% more code, slower frames); then R4 aimed at the engine's render boundary (for N6), its synchronization
-  primitives and the hottest signatures; alongside, in the generator: flags only where read, a
-  function's own frame as host locals, ordering kept only for the engine's synchronization.
+- The library is built from the launcher (done 2026-10-28): `build_library.py` with a downloaded
+  LLVM toolchain and no macOS SDK (`toolchain.sh`; RECOMPILATION.md, "Building the library
+  without Xcode"; not `-ffreestanding`: 32% more code, slower frames).
+- Now (maintainer, 2026-10-28: started before 0.9.0 final; the app's `docs/ROADMAP.md`): R4,
+  aimed at the engine's render boundary (for N6), then its synchronization primitives and the
+  hottest signatures. Names go in `annotations/functions.tsv` (RECOMPILATION.md, "Annotations");
+  REA's output informs them but never goes in the file. Alongside, in the generator: flags only
+  where read, a function's own frame as host locals, ordering kept only for the engine's
+  synchronization.
 
 ## Working rules (all four repositories)
 

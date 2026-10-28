@@ -15,7 +15,8 @@ Progress: one JSON object a line on stdout ({"event": "step", "step": ...}, {"ev
 "done": n, "total": m}, {"event": "done", ...}, or {"event": "error", "message": ...} and exit 1).
 
 Runs from a checkout (out/recomp/scan and bbrecomp from ./build.sh, src/ and deps/include) or from
-an app's kit (KIT/bin, KIT/include, KIT/sdkless, KIT/tools with this script, KIT/VERSION)."""
+an app's kit (KIT/bin, KIT/include, KIT/sdkless, KIT/annotations, KIT/tools with this script,
+KIT/VERSION)."""
 import argparse
 import concurrent.futures
 import datetime
@@ -56,10 +57,12 @@ class Kit:
         kit = HERE.parent
         if (kit / 'bin' / 'bbrecomp').exists():
             self.bin, self.include, self.sdkless = kit / 'bin', [kit / 'include'], kit / 'sdkless'
+            self.annotations = kit / 'annotations' / 'functions.tsv'
             self.version = (kit / 'VERSION').read_text().strip()
         else:
             repo = HERE.parent.parent
             self.bin, self.include, self.sdkless = repo / 'out' / 'recomp', [repo / 'src', repo / 'deps' / 'include'], HERE / 'sdkless'
+            self.annotations = repo / 'annotations' / 'functions.tsv'
             try:
                 self.version = subprocess.check_output(['git', '-C', str(repo), 'rev-parse', 'HEAD'], text=True).strip()
             except (OSError, subprocess.CalledProcessError):
@@ -67,6 +70,8 @@ class Kit:
         for tool in ('scan', 'bbrecomp'):
             if not (self.bin / tool).exists():
                 fail(f'{self.bin / tool} is missing (./build.sh builds it).')
+        if not self.annotations.exists():
+            fail(f'{self.annotations} is missing.')
 
 
 def sha256(path):
@@ -115,7 +120,7 @@ def prepare(kit, game, build, key):
     (build / 'scan' / 'all.txt').write_text('\n'.join(offsets) + '\n')
     emit('step', step='generate', functions=len(offsets))
     run([kit.bin / 'bbrecomp', build / 'eboot.elf', functions, build / 'gen' / 'recomp.c', '@' + str(build / 'scan' / 'all.txt')],
-        'Generating C', env={**os.environ, 'BB_JIT': '0'})
+        'Generating C', env={**os.environ, 'BB_JIT': '0', 'BB_RECOMP_ANNOTATIONS': str(kit.annotations)})
     stamp.write_text(json.dumps(key))
 
 
@@ -180,7 +185,8 @@ def main():
     build = args.work / 'build'
     build.mkdir(parents=True, exist_ok=True)
     emit('step', step='check')
-    key = {'format': FORMAT, 'recomp': kit.version, 'eboot_sha256': sha256(args.game / 'eboot.bin')}
+    key = {'format': FORMAT, 'recomp': kit.version, 'eboot_sha256': sha256(args.game / 'eboot.bin'),
+           'annotations_sha256': sha256(kit.annotations)}
     prepare(kit, args.game, build, key)
     objects = compile_all(kit, clang, resource, build, args.jobs)
     library = args.work / 'librecomp.dylib'

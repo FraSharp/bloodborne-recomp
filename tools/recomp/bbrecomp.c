@@ -238,6 +238,40 @@ static const char *import_name(uint64_t t) {
     }
     return NULL;
 }
+/* The project's names for the game's functions (annotations/functions.tsv, given by
+ * BB_RECOMP_ANNOTATIONS): written at each function and at calls of it ("?" when a guess). */
+typedef struct { uint64_t offset; char name[256]; } Annotation;
+static Annotation *annotations;
+static size_t annotation_count;
+static const char *annotation(uint64_t offset) {
+    for (size_t lo = 0, hi = annotation_count; lo < hi;) {
+        const size_t mid = (lo + hi) / 2;
+        if (annotations[mid].offset == offset) return annotations[mid].name;
+        if (annotations[mid].offset < offset) lo = mid + 1; else hi = mid;
+    }
+    return NULL;
+}
+static void load_annotations(const char *path) {
+    FILE *f = fopen(path, "r");
+    if (!f) { perror(path); exit(1); }
+    char line[1024];
+    for (int number = 1; fgets(line, sizeof(line), f); ++number) {
+        if (line[0] == '#' || line[0] == '\n') continue;
+        unsigned long long offset;
+        char name[250], confidence[16];
+        if (sscanf(line, "%llx\t%249[^\t\n]\t%15[^\t\n]", &offset, name, confidence) != 3 || strstr(name, "*/") ||
+            (strcmp(confidence, "sure") && strcmp(confidence, "guess")) ||
+            (annotation_count && offset <= annotations[annotation_count - 1].offset)) {
+            fprintf(stderr, "%s:%d: not offset, name, sure or guess, in offset order\n", path, number);
+            exit(1);
+        }
+        annotations = realloc(annotations, (annotation_count + 1) * sizeof(*annotations));
+        annotations[annotation_count].offset = offset;
+        snprintf(annotations[annotation_count++].name, sizeof(annotations->name), "%s%s", name,
+                 strcmp(confidence, "guess") ? "" : "?");
+    }
+    fclose(f);
+}
 static int by_offset(const void *a, const void *b);
 static int is_recompiled(uint64_t t) {
     return recompiled && bsearch(&t, recompiled, function_count, sizeof(*recompiled), by_offset) != NULL;
@@ -427,6 +461,7 @@ static int translate(Range f, uint64_t off, const BbInsn *in, uint64_t *stats) {
             /* A recompiled callee directly, when the program filled its slot (the game: the ones it
              * runs; the replay leaves them empty and answers each call from the record). */
             const uint64_t t = off + (uint64_t)d->disp;
+            if (annotation(t)) emit("/* %s */ ", annotation(t));
             if (is_recompiled(t)) {
                 emit("{ extern RcFn d_%" PRIx64 "; " SPILL " if (d_%" PRIx64 ") { c->r[RSP] -= 8; rc_st(c->r[RSP], 8, B + 0x%" PRIx64
                      "ull); c->rip = B + 0x%" PRIx64 "ull; d_%" PRIx64 "(c); } else rc->call(c, B + 0x%" PRIx64 "ull, B + 0x%" PRIx64
@@ -1785,7 +1820,8 @@ static void generate(Function fn, uint64_t *stats) {
         }
     }
     qsort(targets, target_count, sizeof(*targets), by_offset);
-    emit("\n/* 0x%" PRIx64 ", %" PRIu64 " bytes, %zu instructions */\n", fn.offset, fn.size, count);
+    emit("\n/* 0x%" PRIx64 ", %" PRIu64 " bytes, %zu instructions%s%s */\n", fn.offset, fn.size, count,
+         annotation(fn.offset) ? ": " : "", annotation(fn.offset) ? annotation(fn.offset) : "");
     /* Vector registers in locals: the ones the instructions name (non-VEX blendv reads xmm0). */
     vused = 0;
     for (size_t i = 0; i < count; ++i) {
@@ -2001,6 +2037,7 @@ int main(int argc, char **argv) {
     static BbCpu warm;
     bbcpu_run(&warm, 0); /* the interpreter's tables */
     trace_points = getenv("BB_RECOMP_TRACE") && getenv("BB_RECOMP_TRACE")[0] == '1';
+    if (getenv("BB_RECOMP_ANNOTATIONS") && *getenv("BB_RECOMP_ANNOTATIONS")) load_annotations(getenv("BB_RECOMP_ANNOTATIONS"));
     /* OFFSET... or @LIST (one offset a line). */
     size_t capacity = (size_t)argc;
     functions = calloc(capacity, sizeof(*functions));
