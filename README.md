@@ -49,6 +49,22 @@ The game loads the library with `BB_RECOMP_LIB=out/recomp/librecomp.dylib` (bloo
 `tools/recomp/fuzz.sh` checks every instruction form the generator handles against the
 interpreter; `tools/recomp/replay.sh` checks recorded calls ([docs/RECOMPILATION.md](docs/RECOMPILATION.md)).
 
+## Why the releases hold LLVM
+
+The recompiled library is game code, so it is never published: each player's launcher builds it
+on their own device, from their own copy of the game (about 14 minutes on an M3 Pro). That build
+needs a C compiler and a linker, and players should not need Xcode or a developer setup for it.
+
+So the [releases](https://github.com/bloodborne-native/bloodborne-recomp/releases) hold a compiler
+for the launcher to download, not builds of the recompiler. The `toolchain-llvm-<version>` releases
+contain LLVM's official macOS arm64 release, trimmed by
+[`tools/recomp/toolchain.sh`](tools/recomp/toolchain.sh) to what the build uses: `clang`,
+`ld64.lld`, clang's own headers and LLVM's licence (70 MB, against 1.5 GB for the whole release).
+The script checks the official archive against a pinned SHA-256 before trimming it. The launcher
+checks the download against the trimmed archive's own SHA-256, and deletes the toolchain once the
+library is built. LLVM is under the Apache License 2.0 with LLVM Exceptions; the full text is in
+the archive. How the library is built: [docs/RECOMPILATION.md](docs/RECOMPILATION.md#building-the-library-without-xcode).
+
 ## Credits
 
 Full list: [docs/CREDITS.md](docs/CREDITS.md).
