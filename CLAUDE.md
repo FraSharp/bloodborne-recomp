@@ -105,8 +105,9 @@ C changed are compiled again.
   (`docs/NATIVE_RENDERER.md`). Its part here: calls of hooked functions (bbcpu guards, natives)
   from recompiled code must go through the runtime, not directly to the recompiled callee.
 - Next (maintainer, 2026-10-27; the app's `docs/ROADMAP.md` section 8): building the library at
-  install time from the launcher, with a downloaded LLVM toolchain and freestanding flags (no
-  macOS SDK); then R4 aimed at the engine's render boundary (for N6), its synchronization
+  install time from the launcher, with a downloaded LLVM toolchain and no macOS SDK
+  (`build_library.py`, `toolchain.sh`; RECOMPILATION.md, "Building the library without Xcode";
+  not `-ffreestanding`: 32% more code, slower frames); then R4 aimed at the engine's render boundary (for N6), its synchronization
   primitives and the hottest signatures; alongside, in the generator: flags only where read, a
   function's own frame as host locals, ordering kept only for the engine's synchronization.
 

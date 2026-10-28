@@ -178,6 +178,8 @@ All write to `out/recomp/`.
 | `BB_RECORD` (`src/cpu/record.c`) | Calls of chosen functions recorded in the game (`records/<offset>.rec`) |
 | `tools/recomp/replay.sh` | Recorded calls replayed and checked (`--recomp LIB`: the generated code) |
 | `tools/recomp/recomp.sh` | Generated C for chosen functions, compiled (`librecomp.dylib`; `BB_RECOMP_LIB`) |
+| `tools/recomp/build_library.py` | The whole library from a player's game in one resumable run, with only an LLVM toolchain (below); what the launcher runs |
+| `tools/recomp/toolchain.sh` | That toolchain: LLVM's official release trimmed to clang, `ld64.lld` and clang's headers |
 | `tools/recomp/fuzz.sh` | The generator's C for every instruction form, fuzzed against the interpreter |
 
 ```sh
@@ -206,6 +208,41 @@ tools/mac_bench.sh rec BB_RECORD=0x22928a0:247,0x227e230:579 BB_RECORD_EVERY=7 \
     BB_RECORD_DIR=$PWD/recomp/out/recomp/records                             # in the runtime
 tools/recomp/replay.sh out/recomp/records/0x22928a0.rec                      # here
 ```
+
+## Building the library without Xcode
+
+The launcher builds the library on the player's device with `tools/recomp/build_library.py`, the
+app's copy of this repository's tools (its kit: `scan`, `bbrecomp`, the headers the generated C
+includes, `tools/recomp/sdkless/` and the Python steps), and a downloaded LLVM toolchain. It needs
+no Xcode and no macOS SDK.
+
+```sh
+tools/recomp/toolchain.sh OUT                 # llvm-23.1.4-macos-arm64.tar.xz (70 MB) and its SHA-256
+python3 tools/recomp/build_library.py --game "$GAME" --work WORK --toolchain LLVM_DIR [--jobs N]
+```
+
+- **The toolchain:** LLVM 23.1.4's official macOS arm64 release is 1.5 GB; the build uses 360 MB
+  of it (clang, `ld64.lld`, clang's headers, and LLVM's licence: Apache-2.0 with LLVM exception),
+  packed as a 70 MB archive. It is published as an asset of this repository's
+  `toolchain-llvm-23.1.4` release, and the launcher checks it against the SHA-256 it pins.
+- **The flags:** `--target=arm64-apple-macos15 -O2`, the generator's own (`-ffp-contract=off
+  -fno-strict-aliasing -fvisibility=hidden`), `-fno-stack-protector`, and `-nostdinc` with clang's
+  headers and four stand-ins for the system headers the runtime's headers include
+  (`tools/recomp/sdkless/`). Linked by `ld64.lld` with `-nostdlib`, `-undefined error` and only
+  these allowed undefined: `memcpy`, `memset`, `memmove` and the 128-bit division helpers, all in
+  libSystem, which the game process has loaded. **Not `-ffreestanding`:** it turns built-ins off,
+  the code grows 32% and frames took 42.4 ms against 26.3 ms with the usual library.
+- **Measured** (M3 Pro, 8 jobs): 15 minutes from the game folder to the library (generating the C
+  about 3, compiling the 384 files 12, linking 2 s); 241,821 functions; a 330 MB library. At the
+  build's peak it needs about 2.5 GB (the toolchain, 1.4 GB of C, 400 MB of objects, the
+  library); the C and the objects are deleted once it links. The game ran it with 240,978
+  functions replaced and no faults; median frame 26.7 ms against 26.3 ms with the library built by
+  Xcode's clang, on the same save.
+- **Progress and resuming:** one JSON object a line on stdout (steps, files compiled, done or
+  error). An interrupted build keeps what it compiled; the next run compiles only the rest, unless
+  the executable or this repository's version changed. `library.json` beside the library records
+  both (and the compiler, the time and the size); the launcher uses the library only while they
+  match.
 
 ## Record and replay
 
