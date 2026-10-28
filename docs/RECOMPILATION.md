@@ -46,7 +46,7 @@ The recompiled code is produced on the player's machine from their copy, and sta
 | R1 | Recompiler prototype: generated C for the recorded functions, checked by replay | Done |
 | R2 | Coverage: every function generated; the game runs recompiled, the translator as fallback | Done |
 | R3 | Speed: integer, flags and vector instructions in C; memory ordering relaxed where safe | Done: 99.1% of instructions in C; the library takes 14% less CPU time than the translator at the same frame rate |
-| R4 | Annotations: names, signatures and structs make the generated C readable; the engine's render functions first, for the native renderer's N6 | Started: the annotation file and the generator's use of it; libGnm's command buffer methods named |
+| R4 | Annotations: names, signatures and structs make the generated C readable; the engine's render functions first, for the native renderer's N6 | Started: the annotation file and the generator's use of it; libGnm's command buffer methods and the engine's draw methods named |
 | R5 | The engine's graphics on each platform's own GPU API: [native renderer](https://github.com/bloodborne-native/bloodborne-runtime/blob/main/docs/NATIVE_RENDERER.md) (bloodborne-runtime) | N1 and N4 done; N5 (Metal backend): the default renderer on macOS, acceptance pending |
 
 ## Progress
@@ -61,7 +61,7 @@ The recompiled code is produced on the player's machine from their copy, and sta
 | CPU time recompiled, against the translator | `█████████████████░░░` 86% | 344% of one core against 402% (1st Floor Sickroom), 360% against 397% (Cathedral Ward, 2026-10-27) |
 | Functions checked call by call (recordings) | `░░░░░░░░░░░░░░░░░░░░` 0.4% | 933 of 241,821 |
 | Functions labelled by library (2026-10-24) | `█████████████░░░░░░░` 62.7% | 151,562 of 241,821 |
-| Functions named (R4, 2026-10-28) | `░░░░░░░░░░░░░░░░░░░░` 0.03% | 80 of 241,821 (libGnm's command buffer methods) |
+| Functions named (R4, 2026-10-28) | `░░░░░░░░░░░░░░░░░░░░` 0.04% | 102 of 241,821 (libGnm's command buffer methods, the engine's draw boundary) |
 
 Every function is generated; the ones left to the translator are the 660 import stubs, the 130
 functions that call `setjmp`, and 53 that the game's patches (51) or the runtime's live switches
@@ -254,9 +254,14 @@ boundary instead of decoding the PS4's command buffers.
 
 `annotations/functions.tsv` holds one row per named function: its offset in the 1.09
 executable, the project's name for it (`Namespace::Class::method`, `#variant` for a second copy
-of one method), `sure` or `guess`, and the evidence (`pm4`: a libGnm function, named from the
-packets it writes, as `gpu/shim/bbport_gnm_table.inc` in bloodborne-runtime does). The names are
-the project's work, not the game's: no decompiled code goes into the file or its evidence.
+of one method), `sure` or `guess`, the evidence, and the signature in the project's types (the
+arguments in register order). `Gnm::` is Sony's libGnm, linked into the game; `CG::` is
+Dantelion2's CoreGraphics2, whose classes use a `CG` prefix. Evidence: `pm4` (a libGnm function,
+named from the packets it writes, as `gpu/shim/bbport_gnm_table.inc` in bloodborne-runtime does),
+`calls` (the functions it calls and how its arguments reach them), `source` (a source path in its
+messages names the class). Class names are the project's unless the evidence is `source`. The
+names are the project's work, not the game's: no decompiled code goes into the file or its
+evidence.
 
 `bbrecomp` reads the file named by `BB_RECOMP_ANNOTATIONS` (`recomp.sh` and `build_library.py` set
 it; the app's kit carries the file) and writes each name after the function's offset and at every
@@ -264,7 +269,26 @@ call of it, `?` after a guess. The names change comments only: the full library'
 spaces removed, is the same with and without them. `build_library.py` generates the C again when
 the file changes.
 
-So far: libGnm's command buffer methods (80, 15 of them guesses), from the runtime's table.
+So far, 102 functions: libGnm's command buffer methods (81) and the engine's render boundary
+(21).
+
+**The render boundary.** Every draw of CoreGraphics2 goes through seven methods of its graphics
+context: `draw`, `drawInstanced`, `drawIndexed`, `drawIndexedInstanced`, `drawIndirect`,
+`drawIndexedIndirect` and `dispatch`. Each takes a draw (or compute) description and:
+
+1. applies three state blocks from it, each sending libGnm only what changed since the last
+   draw: input assembly (topology, index buffer and format), output merger (blend for eight
+   targets, depth and stencil) and rasterizer (viewport, scissor, culling, polygon offset);
+2. runs the resource binder's step before the draw: resource synchronization (CoreGraphics2's
+   `CGResourceSyncContext`), then the shader resources (one 64 KB function);
+3. calls libGnm's draw, then the binder's step after it.
+
+Render-target operations draw full-screen passes of their own: MSAA resolve, fast-clear
+elimination, depth decompression and depth-stencil clears. Outside CoreGraphics2, Scaleform and
+a library reached through a vtable (labelled Havok) call libGnm's draws themselves.
+
+Next: the callers of the seven methods, the shader resources step, how much of a frame goes
+through the boundary (counted in the game), and the description's layout (R4.3).
 
 ## Record and replay
 
