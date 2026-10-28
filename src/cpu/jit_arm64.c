@@ -165,11 +165,12 @@ static void sync_in(A64 *a) {
     a64_ldr_uoff(a, 3, FAB, CPU, OFF(jf_ab));
 }
 
-/* Indirect branch cache, per thread (BbCpu): guest rip -> translated code. */
-enum { CACHE_BITS = 14 };
+/* Indirect branch cache, per thread (BbCpu): guest rip -> translated code. The index folds in
+ * the bits above the low four, which are zero at the (16-byte aligned) function starts. */
+enum { CACHE_BITS = 16 };
 struct BbJitCacheEntry { uint64_t rip; void *code; };
 static struct BbJitCacheEntry *cache_entry(BbCpu *cpu, uint64_t rip) {
-    return &cpu->jit_cache[(rip >> 2) & ((1u << CACHE_BITS) - 1)];
+    return &cpu->jit_cache[(rip ^ (rip >> 4)) & ((1u << CACHE_BITS) - 1)];
 }
 
 static void *cached_code(BbCpu *cpu) {
@@ -335,7 +336,8 @@ static void exit_to_reg(Tx *t, int reg) {
         return;
     }
     a64_ldr_uoff(a, 3, TB, CPU, OFF(jit_cache));
-    a64_ubfx(a, 1, T4, TA, 2, CACHE_BITS);
+    a64_logic(a, 2, 0, 1, T4, TA, TA, 1, 4); /* eor T4, TA, TA, lsr #4 */
+    a64_ubfx(a, 1, T4, T4, 0, CACHE_BITS);
     a64_arith(a, 0, 1, TB, TB, T4, 0, 4);
     a64_ldp(a, T4, T5, TB, 0);
     a64_subs(a, 1, XZR, T4, TA);
